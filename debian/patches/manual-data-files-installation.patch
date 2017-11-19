@@ -1,0 +1,15 @@
+diff --git a/setup.py b/setup.py
+index adf60e1..b4ce2b6 100644
+--- a/setup.py
++++ b/setup.py
+@@ -31,10 +31,4 @@ setup(
+     scripts=[
+         'autosuspend'
+     ],
+-    data_files=[
+-        ('etc', ['autosuspend.conf',
+-                 'autosuspend-logging.conf']),
+-        ('lib/systemd/system', ['autosuspend.service',
+-                                'autosuspend-detect-suspend.service'])
+-    ]
+ )

@@ -1,0 +1,4 @@
+autosuspend.conf /etc
+autosuspend-logging.conf /etc
+autosuspend.service /lib/systemd/system
+autosuspend-detect-suspend.service /lib/systemd/system

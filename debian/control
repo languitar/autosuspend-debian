@@ -1,0 +1,19 @@
+Source: autosuspend
+Section: utils
+Priority: optional
+Maintainer: Johannes Wienke <languitar@semipol.de>
+Build-Depends: debhelper (>= 10), dh-python, python3-all, python3-setuptools, python3-pytest-runner, python3-psutil
+Standards-Version: 4.1.1
+Homepage: https://github.com/languitar/autosuspend
+X-Python3-Version: >= 3.5
+#Vcs-Git: https://anonscm.debian.org/git/python-modules/packages/autosuspend.git
+#Vcs-Browser: https://anonscm.debian.org/cgit/python-modules/packages/autosuspend.git/
+#Testsuite: autopkgtest-pkg-python
+
+Package: autosuspend
+Architecture: all
+Depends: ${python3:Depends}, ${misc:Depends}
+Suggests: python3-mpd, python3-requests, python3-lxml
+Description: daemon to suspend a system in case of inactivity
+ A daemon to suspend a system in case of inactivity with the aim to reduce the
+ power consumption. Inactivity is determined by a set of configurable checks.

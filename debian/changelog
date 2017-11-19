@@ -1,0 +1,5 @@
+autosuspend (0.6-1) unstable; urgency=medium
+
+  * Initial release (Closes: #nnnn)  <nnnn is the bug number of your ITP>
+
+ -- Johannes Wienke <languitar@semipol.de>  Tue, 14 Nov 2017 09:43:29 +0000
