@@ -10,6 +10,6 @@ version=4
 #opts="pgpsigurlmangle=s%$%.sig%"
 
 # GitHub hosted projects
-opts="filenamemangle=s%release-(.*)\.tar\.gz%autosuspend-$1.tar.gz%" \
-   https://github.com/languitar/autosuspend/releases \
-   .*/release-(.*)\.tar\.gz debian uupdate
+opts=filenamemangle=s/.+\/v?(\d\S+)\.tar\.gz/autosuspend-$1\.tar\.gz/ \
+  https://github.com/languitar/autosuspend/tags .*/v?(\d\S+)\.tar\.gz
+
