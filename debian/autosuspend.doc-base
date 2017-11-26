@@ -1,0 +1,9 @@
+Document: autosuspend
+Title: autosuspend manual
+Author: Johannes Wienke
+Abstract: Describes how to configure and execute autosuspend.
+Section: System/Administration
+
+Format: HTML
+Index: /usr/share/doc/autosuspend/html/index.html
+Files: /usr/share/doc/autosuspend/html/*.html
