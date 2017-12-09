@@ -17,3 +17,10 @@ Suggests: python3-mpd, python3-requests, python3-lxml
 Description: daemon to suspend a system in case of inactivity
  A daemon to suspend a system in case of inactivity with the aim to reduce the
  power consumption. Inactivity is determined by a set of configurable checks.
+ Autosuspend periodically executes these checks, and if none of theme indicated
+ activity, the system is suspended.
+ .
+ Autosuspend does not depend on X11 and desktop environments and is therefore
+ specifically intended for (home) servers. Most available checks address these
+ usage scenarios. Yet, also the X11 idle time can be used as a check to support
+ graphical use cases.
