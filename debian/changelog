@@ -1,3 +1,9 @@
+autosuspend (1.0.0-2) unstable; urgency=medium
+
+  * Make suggested packages recommends, add xprintidle
+
+ -- Johannes Wienke <languitar@semipol.de>  Sun, 17 Dec 2017 11:29:34 +0000
+
 autosuspend (1.0.0-1) unstable; urgency=medium
 
   * Initial release (Closes: #883414)
