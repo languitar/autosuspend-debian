@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""A daemon to suspend a system on inactivity."""
 
 import abc
 import argparse
@@ -9,12 +10,13 @@ import glob
 import logging
 import logging.config
 import os
+import os.path
 import pwd
 import re
 import socket
 import subprocess
-import sys
 import time
+from typing import Callable, Iterable, List, Optional, Sequence
 
 import psutil
 
@@ -25,41 +27,44 @@ _logger = logging.getLogger()
 
 
 class ConfigurationError(RuntimeError):
-    """
-    Indicates an error in the configuration of a :class:`Check`.
-    """
+    """Indicates an error in the configuration of a :class:`Check`."""
+
     pass
 
 
 class TemporaryCheckError(RuntimeError):
+    """Indicates a temporary error while performing a check.
+
+    Such an error can be ignored for some time since it might recover
+    automatically.
     """
-    Indicates a temporary error while performing a check which can be ignored
-    for some time since it might recover automatically.
-    """
+
     pass
 
 
 class SevereCheckError(RuntimeError):
+    """Indicates a sever check error that will probably not recover.
+
+    There no hope this situation recovers.
     """
-    Indicates that a check cannot be executed correctly and there is no hope
-    this situation recovers.
-    """
+
     pass
 
 
 class Check(object):
-    """
-    Base class for checks.
+    """Base class for checks.
 
-    Subclasses must call this class' __init__ method.
+    Subclasses must call this class' ``__init__`` method.
+
+    Args:
+        name (str):
+            Configured name of the check
     """
 
     @classmethod
     @abc.abstractmethod
-    def create(cls, name, config):
-        """
-        Factory method to create an appropriate instance of the check for the
-        provided options.
+    def create(cls, name: str, config: configparser.SectionProxy) -> 'Check':
+        """Create a new check instance from the provided configuration.
 
         Args:
             name (str):
@@ -70,10 +75,11 @@ class Check(object):
         Raises:
             ConfigurationError:
                 Configuration for this check is inappropriate
+
         """
         pass
 
-    def __init__(self, name=None):
+    def __init__(self, name: str=None) -> None:
         if name:
             self.name = name
         else:
@@ -82,9 +88,8 @@ class Check(object):
             'check.{}'.format(self.name))
 
     @abc.abstractmethod
-    def check(self):
-        """
-        Performs a check and reports whether suspending shall NOT take place.
+    def check(self) -> Optional[str]:
+        """Determine if system activity exists that prevents suspending.
 
         Returns:
             str:
@@ -99,39 +104,125 @@ class Check(object):
         """
         pass
 
-    def __str__(self):
+    def __str__(self) -> str:
         return '{name}[class={clazz}]'.format(name=self.name,
                                               clazz=self.__class__.__name__)
 
 
-class Ping(Check):
-    """
-    Prevents system sleep in case one or several hosts are reachable via ping.
-    """
+class ActiveConnection(Check):
+    """Checks if a client connection exists on specified ports."""
 
     @classmethod
     def create(cls, name, config):
         try:
-            hosts = config['hosts'].split(',')
-            hosts = [h.strip() for h in hosts]
-            return cls(name, hosts)
-        except KeyError as error:
-            raise ConfigurationError(
-                'Unable to determine hosts to ping: {}'.format(error))
+            ports = config['ports']
+            ports = ports.split(',')
+            ports = [p.strip() for p in ports]
+            ports = set([int(p) for p in ports])
+            return cls(name, ports)
+        except KeyError:
+            raise ConfigurationError('Missing option ports')
+        except ValueError:
+            raise ConfigurationError('Ports must be integers')
 
-    def __init__(self, name, hosts):
+    def __init__(self, name, ports):
         Check.__init__(self, name)
-        self._hosts = hosts
+        self._ports = ports
 
     def check(self):
-        for host in self._hosts:
-            cmd = ['ping', '-q', '-c', '1', host]
-            if subprocess.call(cmd,
-                               stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL) == 0:
-                self.logger.debug("host " + host + " appears to be up")
-                return 'Host {} is up'.format(host)
-        return None
+        own_addresses = [(item.family, item.address)
+                         for sublist in psutil.net_if_addrs().values()
+                         for item in sublist]
+        connected = [c.laddr[1]
+                     for c in psutil.net_connections()
+                     if ((c.family, c.laddr[0]) in own_addresses
+                         and c.status == 'ESTABLISHED'
+                         and c.laddr[1] in self._ports)]
+        if connected:
+            return 'Ports {} are connected'.format(connected)
+
+
+class ExternalCommand(Check):
+
+    @classmethod
+    def create(cls, name, config):
+        try:
+            return cls(name, config['command'].strip())
+        except KeyError as error:
+            raise ConfigurationError('Missing command specification')
+
+    def __init__(self, name, command):
+        Check.__init__(self, name)
+        self._command = command
+
+    def check(self):
+        try:
+            subprocess.check_call(self._command, shell=True)
+            return 'Command {} succeeded'.format(self._command)
+        except subprocess.CalledProcessError as error:
+            return None
+
+
+class Kodi(Check):
+
+    @classmethod
+    def create(cls, name, config):
+        try:
+            url = config.get('url', fallback='http://localhost:8080/jsonrpc')
+            timeout = config.getint('timeout', fallback=5)
+            return cls(name, url, timeout)
+        except ValueError as error:
+            raise ConfigurationError(
+                'Url or timeout configuration wrong: {}'.format(error))
+
+    def __init__(self, name, url, timeout):
+        Check.__init__(self, name)
+        self._url = url
+        self._timeout = timeout
+
+    def check(self):
+        import requests
+        import requests.exceptions
+
+        try:
+            reply = requests.get(self._url +
+                                 '?request={"jsonrpc": "2.0", '
+                                 '"id": 1, '
+                                 '"method": "Player.GetActivePlayers"}',
+                                 timeout=self._timeout).json()
+            if 'result' not in reply:
+                raise TemporaryCheckError('No result array in reply')
+            if reply['result']:
+                return "Kodi currently playing"
+            else:
+                return None
+        except requests.exceptions.RequestException as error:
+            raise TemporaryCheckError(error)
+
+
+class Load(Check):
+
+    @classmethod
+    def create(cls, name, config):
+        try:
+            return cls(name,
+                       config.getfloat('threshold', fallback=2.5))
+        except ValueError as error:
+            raise ConfigurationError(
+                'Unable to parse threshold as float: {}'.format(error))
+
+    def __init__(self, name, threshold):
+        Check.__init__(self, name)
+        self._threshold = threshold
+
+    def check(self):
+        loadcurrent = os.getloadavg()[1]
+        self.logger.debug("Load: %s", loadcurrent)
+        if loadcurrent > self._threshold:
+            return 'Load {} > threshold {}'.format(loadcurrent,
+                                                   self._threshold)
+        else:
+            return None
 
 
 class Mpd(Check):
@@ -177,40 +268,154 @@ class Mpd(Check):
             raise TemporaryCheckError(error)
 
 
-class Kodi(Check):
+class NetworkBandwidth(Check):
 
     @classmethod
     def create(cls, name, config):
         try:
-            url = config.get('url', fallback='http://localhost:8080/jsonrpc')
-            timeout = config.getint('timeout', fallback=5)
-            return cls(name, url, timeout)
+            interfaces = config['interfaces']
+            interfaces = interfaces.split(',')
+            interfaces = [i.strip() for i in interfaces if i.strip()]
+            if not interfaces:
+                raise ConfigurationError('No interfaces configured')
+            host_interfaces = psutil.net_if_addrs().keys()
+            for interface in interfaces:
+                if interface not in host_interfaces:
+                    raise ConfigurationError(
+                        'Network interface {} does not exist'.format(
+                            interface))
+            threshold_send = config.getfloat('threshold_send',
+                                             fallback=100)
+            threshold_receive = config.getfloat('threshold_receive',
+                                                fallback=100)
+            return cls(name, interfaces, threshold_send, threshold_receive)
+        except KeyError as error:
+            raise ConfigurationError(
+                'Missing configuration key: {}'.format(error))
         except ValueError as error:
             raise ConfigurationError(
-                'Url or timeout configuration wrong: {}'.format(error))
+                'Threshold in wrong format: {}'.format(error))
 
-    def __init__(self, name, url, timeout):
+    def __init__(self, name, interfaces, threshold_send, threshold_receive):
         Check.__init__(self, name)
-        self._url = url
-        self._timeout = timeout
+        self._interfaces = interfaces
+        self._threshold_send = threshold_send
+        self._threshold_receive = threshold_receive
+        self._previous_values = psutil.net_io_counters(pernic=True)
+        self._previous_time = time.time()
 
     def check(self):
-        import requests
-        import requests.exceptions
+        new_values = psutil.net_io_counters(pernic=True)
+        new_time = time.time()
+        for interface in self._interfaces:
+            if interface not in new_values or \
+                    interface not in self._previous_values:
+                raise TemporaryCheckError(
+                    'Interface {} is missing'.format(interface))
 
+            # send direction
+            delta_send = new_values[interface].bytes_sent - \
+                self._previous_values[interface].bytes_sent
+            rate_send = delta_send / (new_time - self._previous_time)
+            if rate_send > self._threshold_send:
+                return 'Interface {} sending rate {} byte/s '\
+                    'higher than threshold {}'.format(
+                        interface, rate_send, self._threshold_send)
+
+            delta_receive = new_values[interface].bytes_recv - \
+                self._previous_values[interface].bytes_recv
+            rate_receive = delta_receive / (new_time - self._previous_time)
+            if rate_receive > self._threshold_receive:
+                return 'Interface {} receive rate {} byte/s '\
+                    'higher than threshold {}'.format(
+                        interface, rate_receive, self._threshold_receive)
+
+
+class Ping(Check):
+    """Check if one or several hosts are reachable via ping."""
+
+    @classmethod
+    def create(cls, name, config):
         try:
-            reply = requests.get(self._url +
-                                 '?request={"jsonrpc": "2.0", '
-                                 '"id": 1, '
-                                 '"method": "Player.GetActivePlayers"}').json()
-            if 'result' not in reply:
-                raise TemporaryCheckError('No result array in reply')
-            if reply['result']:
-                return "Kodi currently playing"
+            hosts = config['hosts'].split(',')
+            hosts = [h.strip() for h in hosts]
+            return cls(name, hosts)
+        except KeyError as error:
+            raise ConfigurationError(
+                'Unable to determine hosts to ping: {}'.format(error))
+
+    def __init__(self, name, hosts):
+        Check.__init__(self, name)
+        self._hosts = hosts
+
+    def check(self):
+        for host in self._hosts:
+            cmd = ['ping', '-q', '-c', '1', host]
+            if subprocess.call(cmd,
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL) == 0:
+                self.logger.debug("host " + host + " appears to be up")
+                return 'Host {} is up'.format(host)
+        return None
+
+
+class Processes(Check):
+
+    @classmethod
+    def create(cls, name, config):
+        try:
+            processes = config['processes'].split(',')
+            processes = [p.strip() for p in processes]
+            return cls(name, processes)
+        except KeyError:
+            raise ConfigurationError('No processes to check specified')
+
+    def __init__(self, name, processes):
+        Check.__init__(self, name)
+        self._processes = processes
+
+    def check(self):
+        for proc in psutil.process_iter():
+            try:
+                pinfo = proc.name()
+                for name in self._processes:
+                    if pinfo == name:
+                        return 'Process {} is running'.format(name)
+            except psutil.NoSuchProcess:
+                pass
+        return None
+
+
+class Smb(Check):
+
+    @classmethod
+    def create(cls, name, config):
+        return cls(name)
+
+    def check(self):
+        try:
+            status_output = subprocess.check_output(
+                ['smbstatus', '-b']).decode('utf-8')
+        except subprocess.CalledProcessError as error:
+            raise SevereCheckError(error)
+
+        self.logger.debug('Received status output:\n%s',
+                          status_output)
+
+        connections = []
+        start_seen = False
+        for line in status_output.splitlines():
+            if start_seen:
+                connections.append(line)
             else:
-                return None
-        except requests.exceptions.RequestException as error:
-            raise TemporaryCheckError(error)
+                if line.startswith('----'):
+                    start_seen = True
+
+        if connections:
+            return 'SMB clients are connected:\n{}'.format(
+                '\n'.join(connections))
+        else:
+            return None
 
 
 class Users(Check):
@@ -251,158 +456,81 @@ class Users(Check):
         return None
 
 
-class Smb(Check):
+def _list_logind_sessions():
+    """Lists running logind sessions and their properties.
 
-    @classmethod
-    def create(cls, name, config):
-        return cls(name)
+    Returns:
+        list of (session_id, properties dict):
+            A list with tuples of sessions ids and their associated properties
+            represented as dicts.
+    """
+    import dbus
+    bus = dbus.SystemBus()
+    login1 = bus.get_object("org.freedesktop.login1",
+                            "/org/freedesktop/login1")
 
-    def check(self):
-        try:
-            status_output = subprocess.check_output(
-                ['smbstatus', '-b']).decode('utf-8')
-        except subprocess.CalledProcessError as error:
-            raise SevereCheckError(error)
+    sessions = login1.ListSessions(
+        dbus_interface='org.freedesktop.login1.Manager')
 
-        self.logger.debug('Received status output:\n%s',
-                          status_output)
+    results = []
+    for session_id, path in [(s[0], s[4]) for s in sessions]:
+        session = bus.get_object('org.freedesktop.login1', path)
+        properties_interface = dbus.Interface(
+            session, 'org.freedesktop.DBus.Properties')
+        properties = properties_interface.GetAll(
+            'org.freedesktop.login1.Session')
+        results.append((session_id, properties))
 
-        connections = []
-        start_seen = False
-        for line in status_output.splitlines():
-            if start_seen:
-                connections.append(line)
-            else:
-                if line.startswith('----'):
-                    start_seen = True
-
-        if connections:
-            return 'SMB clients are connected:\n{}'.format(
-                '\n'.join(connections))
-        else:
-            return None
-
-
-class Processes(Check):
-
-    @classmethod
-    def create(cls, name, config):
-        try:
-            processes = config['processes'].split(',')
-            processes = [p.strip() for p in processes]
-            return cls(name, processes)
-        except KeyError:
-            raise ConfigurationError('No processes to check specified')
-
-    def __init__(self, name, processes):
-        Check.__init__(self, name)
-        self._processes = processes
-
-    def check(self):
-        for proc in psutil.process_iter():
-            try:
-                pinfo = proc.name()
-                for name in self._processes:
-                    if pinfo == name:
-                        return 'Process {} is running'.format(name)
-            except psutil.NoSuchProcess:
-                pass
-        return None
-
-
-class ActiveConnection(Check):
-
-    @classmethod
-    def create(cls, name, config):
-        try:
-            ports = config['ports']
-            ports = ports.split(',')
-            ports = [p.strip() for p in ports]
-            ports = set([int(p) for p in ports])
-            return cls(name, ports)
-        except KeyError:
-            raise ConfigurationError('Missing option ports')
-        except ValueError:
-            raise ConfigurationError('Ports must be integers')
-
-    def __init__(self, name, ports):
-        Check.__init__(self, name)
-        self._ports = ports
-
-    def check(self):
-        own_addresses = [(item.family, item.address)
-                         for sublist in psutil.net_if_addrs().values()
-                         for item in sublist]
-        connected = [c.laddr[1]
-                     for c in psutil.net_connections()
-                     if ((c.family, c.laddr[0]) in own_addresses
-                         and c.status == 'ESTABLISHED'
-                         and c.laddr[1] in self._ports)]
-        if connected:
-            return 'Ports {} are connected'.format(connected)
-
-
-class Load(Check):
-
-    @classmethod
-    def create(cls, name, config):
-        try:
-            return cls(name,
-                       config.getfloat('threshold', fallback=2.5))
-        except ValueError as error:
-            raise ConfigurationError(
-                'Unable to parse threshold as float: {}'.format(error))
-
-    def __init__(self, name, threshold):
-        Check.__init__(self, name)
-        self._threshold = threshold
-
-    def check(self):
-        loadcurrent = os.getloadavg()[1]
-        self.logger.debug("Load: %s", loadcurrent)
-        if loadcurrent > self._threshold:
-            return 'Load {} > threshold {}'.format(loadcurrent,
-                                                   self._threshold)
-        else:
-            return None
+    return results
 
 
 class XIdleTime(Check):
-    '''
-    Checks users with a local X display have been idle for a sufficiently long
-    time.
-    '''
+    """Check that local X display have been idle long enough."""
 
     @classmethod
     def create(cls, name, config):
         try:
             return cls(name, config.getint('timeout', fallback=600),
+                       config.get('method', fallback='sockets'),
                        re.compile(config.get('ignore_if_process',
                                              fallback=r'a^')),
                        re.compile(config.get('ignore_users',
-                                             fallback=r'^a')))
+                                             fallback=r'a^')))
         except re.error as error:
             raise ConfigurationError(
                 'Regular expression is invalid: {}'.format(error))
         except ValueError as error:
             raise ConfigurationError(
-                'Unable to parse timeout as int: {}'.format(error))
+                'Unable to parse configuration: {}'.format(error))
 
-    def __init__(self, name, timeout, ignore_process_re, ignore_users_re):
+    def __init__(self, name, timeout, method,
+                 ignore_process_re, ignore_users_re):
         Check.__init__(self, name)
         self._timeout = timeout
+        if method == 'sockets':
+            self._provide_sessions = self._list_sessions_sockets
+        elif method == 'logind':
+            self._provide_sessions = self._list_sessions_logind
+        else:
+            raise ValueError(
+                "Unknown session discovery method {}".format(method))
         self._ignore_process_re = ignore_process_re
         self._ignore_users_re = ignore_users_re
 
-    def check(self):
+    def _list_sessions_sockets(self):
+        """Lists running X sessions by iterating the X sockets.
+
+        This method assumes that X servers are run under the users using the
+        server.
+        """
         sockets = glob.glob('/tmp/.X11-unix/X*')
         self.logger.debug('Found sockets: %s', sockets)
-        for sock in sockets:
-            self.logger.info('Checking socket %s', sock)
 
+        results = []
+        for sock in sockets:
             # determine the number of the X display
             try:
-                number = int(sock[len('/tmp/.X11-unix/X'):])
+                display = int(sock[len('/tmp/.X11-unix/X'):])
             except ValueError as error:
                 self.logger.warning(
                     'Cannot parse display number from socket %s. Skipping.',
@@ -418,41 +546,76 @@ class XIdleTime(Check):
                     sock, exc_info=True)
                 continue
 
+            results.append((display, user))
+
+        return results
+
+    def _list_sessions_logind(self):
+        """Lists running X sessions using logind.
+
+        This method assumes that a ``Display`` variable is set in the logind
+        sessions.
+        """
+        results = []
+        for session_id, properties in _list_logind_sessions():
+            if 'Name' in properties and 'Display' in properties:
+                try:
+                    results.append(
+                        (int(properties['Display'].replace(':', '')),
+                         str(properties['Name'])))
+                except ValueError as e:
+                    self.logger.warn(
+                        'Unable to parse display from session properties %s',
+                        properties, exc_info=True)
+            else:
+                self.logger.debug(
+                    'Skipping session %s because it does not contain '
+                    'a user name and a display', session_id)
+        return results
+
+    def _is_skip_process_running(self, user):
+        user_processes = []
+        for process in psutil.process_iter():
+            try:
+                if process.username() == user:
+                    user_processes.append(process.name())
+            except (psutil.NoSuchProcess,
+                    psutil.ZombieProcess,
+                    psutil.AccessDenied):
+                # ignore processes which have disappeared etc.
+                pass
+
+        for process in user_processes:
+            if self._ignore_process_re.match(process) is not None:
+                self.logger.debug(
+                    "Process %s with pid %s matches the ignore regex '%s'."
+                    " Skipping idle time check for this user.",
+                    process.name(), process.pid, self._ignore_process_re)
+                return True
+
+        return False
+
+    def check(self):
+        for display, user in self._provide_sessions():
+            self.logger.info('Checking display %s of user %s', display, user)
+
             # check whether this users should be ignored completely
             if self._ignore_users_re.match(user) is not None:
                 self.logger.debug("Skipping user '%s' due to request", user)
                 continue
 
             # check whether any of the running processes of this user matches
-            # the ignore regular expression. In that case we skip ideltime
-            # checking because we assume the user has a process running, which
+            # the ignore regular expression. In that case we skip idletime
+            # checking because we assume the user has a process running that
             # inevitably tampers with the idle time.
-            user_processes = []
-            for process in psutil.process_iter():
-                try:
-                    if process.username() == user:
-                        user_processes.append(process.name())
-                except (psutil.NoSuchProcess,
-                        psutil.ZombieProcess,
-                        psutil.AccessDenied):
-                    # ignore processes which have disappeared etc.
-                    pass
-
-            skip = False
-            for process in user_processes:
-                if self._ignore_process_re.match(process) is not None:
-                    self.logger.debug(
-                        "Process %s with pid %s matches the ignore regex '%s'."
-                        " Skipping idle time check for this user.",
-                        process.name(), process.pid, self._ignore_process_re)
-                    skip = True
-                    break
-            if skip:
+            if self._is_skip_process_running(user):
                 continue
 
             # prepare the environment for the xprintidle call
             env = copy.deepcopy(os.environ)
-            env['DISPLAY'] = ':{}'.format(number)
+            env['DISPLAY'] = ':{}'.format(display)
+            env['XAUTHORITY'] = os.path.join(os.path.expanduser('~' + user),
+                                             '.Xauthority')
 
             try:
                 idle_time = subprocess.check_output(
@@ -461,40 +624,59 @@ class XIdleTime(Check):
             except (subprocess.CalledProcessError, ValueError) as error:
                 self.logger.warning(
                     'Unable to determine the idle time for display %s.',
-                    number, exc_info=True)
+                    display, exc_info=True)
                 raise TemporaryCheckError(error)
 
             self.logger.debug(
                 'Idle time for display %s of user %s is %s seconds.',
-                number, user, idle_time)
+                display, user, idle_time)
 
             if idle_time < self._timeout:
                 return 'X session {} of user {} ' \
                     'has idle time {} < threshold {}'.format(
-                        number, user, idle_time, self._timeout)
+                        display, user, idle_time, self._timeout)
 
         return None
 
 
-class ExternalCommand(Check):
+class LogindSessionsIdle(Check):
+    """Prevents suspending in case a logind session is marked not idle.
+
+    The decision is based on the ``IdleHint`` property of logind sessions.
+    """
 
     @classmethod
     def create(cls, name, config):
-        try:
-            return cls(name, config['command'].strip())
-        except KeyError as error:
-            raise ConfigurationError('Missing command specification')
+        types = config.get('types', fallback='tty,x11,wayland')
+        types = [t.strip() for t in types.split(',')]
+        states = config.get('states', fallback='active,online')
+        states = [t.strip() for t in states.split(',')]
+        return cls(name, types, states)
 
-    def __init__(self, name, command):
+    def __init__(self, name, types, states):
         Check.__init__(self, name)
-        self._command = command
+        self._types = types
+        self._states = states
 
     def check(self):
-        try:
-            subprocess.check_call(self._command, shell=True)
-            return 'Command {} succeeded'.format(self._command)
-        except subprocess.CalledProcessError as error:
-            return None
+        for session_id, properties in _list_logind_sessions():
+            self.logger.debug('Session %s properties: %s',
+                              session_id, properties)
+
+            if properties['Type'] not in self._types:
+                self.logger.debug('Ignoring session of wrong type %s',
+                                  properties['type'])
+                continue
+            if properties['State'] not in self._states:
+                self.logger.debug('Ignoring session because its state is %s',
+                                  properties['State'])
+                continue
+
+            if properties['IdleHint'] == 'no':
+                return 'Login session {} is not idle'.format(
+                           session_id, properties['IdleHint'])
+
+        return None
 
 
 class XPath(Check):
@@ -509,15 +691,19 @@ class XPath(Check):
                 etree.fromstring('<a></a>').xpath(xpath)
             except etree.XPathEvalError:
                 raise ConfigurationError('Invalid xpath expression: ' + xpath)
-            return cls(name, xpath, config['url'])
+            timeout = config.getint('timeout', fallback=5)
+            return cls(name, xpath, config['url'], timeout)
+        except ValueError as error:
+            raise ConfigurationError('Configuration error ' + str(error))
         except KeyError as error:
             raise ConfigurationError('No ' + str(error) +
                                      ' entry defined for the XPath check')
 
-    def __init__(self, name, xpath, url):
+    def __init__(self, name, xpath, url, timeout):
         Check.__init__(self, name)
         self._xpath = xpath
         self._url = url
+        self._timeout = timeout
 
     def check(self):
         import requests
@@ -525,7 +711,7 @@ class XPath(Check):
         from lxml import etree
 
         try:
-            reply = requests.get(self._url).text
+            reply = requests.get(self._url, timeout=self._timeout).text
             root = etree.fromstring(reply)
             if root.xpath(self._xpath):
                 return "XPath matches for url " + self._url
@@ -535,7 +721,14 @@ class XPath(Check):
             raise TemporaryCheckError(error)
 
 
-def execute_suspend(command):
+def execute_suspend(command: str):
+    """Suspend the system by calling the specified command.
+
+    Args:
+        command:
+            The command to execute, which will be executed using shell
+            execution
+    """
     _logger.info('Suspending using command: %s', command)
     try:
         subprocess.check_call(command, shell=True)
@@ -545,13 +738,23 @@ def execute_suspend(command):
 
 
 # pylint: disable=invalid-name
-_checks = []
+_checks = []  # type: List[Check]
 # pylint: enable=invalid-name
 
-JUST_WOKE_UP_FILE = '/tmp/autosuspend-just-woke-up'
 
+def execute_checks(checks: Iterable[Check], all_checks: bool, logger) -> bool:
+    """Execute the provided checks sequentially.
 
-def execute_checks(checks, all_checks, logger):
+    Args:
+        checks:
+            the checks to execute
+        all_checks:
+            if ``True``, execute all checks even if a previous one already
+            matched.
+
+    Return:
+        ``True`` if a check matched
+    """
     matched = False
     for check in checks:
         logger.debug('Executing check %s', check.name)
@@ -569,7 +772,26 @@ def execute_checks(checks, all_checks, logger):
     return matched
 
 
-def loop(interval, idle_time, sleep_fn, all_checks=False, run_for=None):
+def loop(interval: int,
+         idle_time: int,
+         sleep_fn: Callable,
+         all_checks: bool = False,
+         run_for: Optional[int] = None,
+         woke_up_file: str = '/var/run/autosuspend-just-woke-up') -> None:
+    """Run the main loop of the daemon.
+
+    Args:
+        interval:
+            the length of one iteration of the main loop in seconds
+        idle_time:
+            the required amount of time the system has to be idle before
+            suspension is triggered
+        sleep_fn:
+            a callable that triggers suspension
+        run_for:
+            if specified, run the main loop for the specified amount of seconds
+            before terminating (approximately)
+    """
     logger = logging.getLogger('loop')
 
     start_time = time.time()
@@ -582,9 +804,9 @@ def loop(interval, idle_time, sleep_fn, all_checks=False, run_for=None):
 
         logger.debug('All checks have been executed')
 
-        if os.path.isfile(JUST_WOKE_UP_FILE):
+        if os.path.isfile(woke_up_file):
             logger.info('Just woke up from suspension. Resetting')
-            os.remove(JUST_WOKE_UP_FILE)
+            os.remove(woke_up_file)
             idle_since = None
             time.sleep(interval)
         elif matched:
@@ -607,8 +829,13 @@ def loop(interval, idle_time, sleep_fn, all_checks=False, run_for=None):
                 time.sleep(interval)
 
 
-def set_up_checks(config):
+def set_up_checks(config: configparser.ConfigParser) -> List[Check]:
+    """Set up :py.class:`Check` instances from a given configuration.
 
+    Args:
+        config:
+            the configuration to use
+    """
     configured_checks = []
 
     check_section = [s for s in config.sections() if s.startswith('check.')]
@@ -647,7 +874,13 @@ def set_up_checks(config):
     return configured_checks
 
 
-def parse_config(config_file):
+def parse_config(config_file: Iterable[str]):
+    """Parse the configuration file.
+
+    Args:
+        config_file:
+            The file to parse
+    """
     _logger.debug('Reading config file %s', config_file)
     config = configparser.ConfigParser()
     config.read_file(config_file)
@@ -655,7 +888,14 @@ def parse_config(config_file):
     return config
 
 
-def parse_arguments(args):
+def parse_arguments(args: Optional[Sequence[str]]) -> argparse.Namespace:
+    """Parse command line arguments.
+
+    Args:
+        args:
+            if specified, use the provided arguments instead of the default
+            ones determined via the :module:`sys` module.
+    """
     parser = argparse.ArgumentParser(
         description='Automatically suspends a server '
                     'based on several criteria',
@@ -701,16 +941,15 @@ def parse_arguments(args):
              'the console. If used with an argument, the '
              'configuration is read from the specified file.')
 
-    args = parser.parse_args(args)
+    result = parser.parse_args(args)
 
-    _logger.debug('Parsed command line arguments %s', args)
+    _logger.debug('Parsed command line arguments %s', result)
 
-    return args
+    return result
 
 
 def configure_logging(file_or_flag):
-    """
-    Configure the python :mod:`logging` system.
+    """Configure the python :mod:`logging` system.
 
     If the provided argument is a `file` instance, try to use the
     pointed to file as a configuration for the logging system. Otherwise,
@@ -743,6 +982,7 @@ def configure_logging(file_or_flag):
 
 
 def main(args=None):
+    """Run the daemon."""
     global _checks
     args = parse_arguments(args)
     configure_logging(args.logging)
@@ -753,7 +993,9 @@ def main(args=None):
          functools.partial(execute_suspend,
                            config.get('general', 'suspend_cmd')),
          all_checks=args.all_checks,
-         run_for=args.run_for)
+         run_for=args.run_for,
+         woke_up_file=config.get('general', 'woke_up_file',
+                                 fallback='/var/run/autosuspend-just-woke-up'))
 
 
 if __name__ == "__main__":

@@ -1,15 +1,17 @@
 import configparser
 import logging
 import os.path
+import pwd
 import re
 import socket
 import subprocess
-import unittest.mock
+import sys
 
 import psutil
 
 import pytest
 
+import requests
 import requests.exceptions
 
 import autosuspend
@@ -79,7 +81,6 @@ class TestUsers(object):
         except TypeError:
             # psutil 5.0
             return psutil._common.suser(name, terminal, host, started)
-
 
     def test_no_users(self, monkeypatch):
 
@@ -409,6 +410,102 @@ class TestMpd(object):
             autosuspend.Mpd.create('name', parser['section'])
 
 
+class TestNetworkBandwidth(object):
+
+    def test_smoke(self):
+        check = autosuspend.NetworkBandwidth(
+            'name', psutil.net_if_addrs().keys(), 0, 0)
+        # make some traffic
+        requests.get('https://www.google.de/')
+        assert check.check() is not None
+
+    @pytest.fixture
+    def mock_interfaces(self, mocker):
+        mock = mocker.patch('psutil.net_if_addrs')
+        mock.return_value = {'foo': None, 'bar': None, 'baz': None}
+
+    def test_create(self, mock_interfaces):
+        parser = configparser.ConfigParser()
+        parser.read_string('''
+[section]
+interfaces = foo, baz
+threshold_send = 200
+threshold_receive = 300
+''')
+        check = autosuspend.NetworkBandwidth.create('name', parser['section'])
+        assert set(check._interfaces) == set(['foo', 'baz'])
+        assert check._threshold_send == 200
+        assert check._threshold_receive == 300
+
+    def test_create_default(self, mock_interfaces):
+        parser = configparser.ConfigParser()
+        parser.read_string('''
+[section]
+interfaces = foo, baz
+''')
+        check = autosuspend.NetworkBandwidth.create('name', parser['section'])
+        assert set(check._interfaces) == set(['foo', 'baz'])
+        assert check._threshold_send == 100
+        assert check._threshold_receive == 100
+
+    @pytest.mark.parametrize("config,error_match", [
+        ('''
+[section]
+interfaces = foo, NOTEXIST
+threshold_send = 200
+threshold_receive = 300
+''', r'does not exist'),
+        ('''
+[section]
+threshold_send = 200
+threshold_receive = 300
+''', r'configuration key: \'interfaces\''),
+        ('''
+[section]
+interfaces =
+threshold_send = 200
+threshold_receive = 300
+''', r'No interfaces configured'),
+        ('''
+[section]
+interfaces = foo, bar
+threshold_send = xxx
+''', r'Threshold in wrong format'),
+        ('''
+[section]
+interfaces = foo, bar
+threshold_receive = xxx
+''', r'Threshold in wrong format'),
+    ])
+    def test_create_error(self, mock_interfaces, config, error_match):
+        parser = configparser.ConfigParser()
+        parser.read_string(config)
+        with pytest.raises(autosuspend.ConfigurationError, match=error_match):
+            autosuspend.NetworkBandwidth.create('name', parser['section'])
+
+    @pytest.mark.parametrize('send_threshold,receive_threshold,match', [
+        (sys.float_info.max, 0, 'receive'),
+        (0, sys.float_info.max, 'sending'),
+    ])
+    def test_with_activity(self, send_threshold, receive_threshold, match):
+        check = autosuspend.NetworkBandwidth(
+            'name', psutil.net_if_addrs().keys(),
+            send_threshold, receive_threshold)
+        # make some traffic
+        requests.get('https://www.google.de/')
+        res = check.check()
+        assert res is not None
+        assert match in res
+
+    def test_no_activity(self):
+        check = autosuspend.NetworkBandwidth(
+            'name', psutil.net_if_addrs().keys(),
+            sys.float_info.max, sys.float_info.max)
+        # make some traffic
+        requests.get('https://www.google.de/')
+        assert check.check() is None
+
+
 class TestKodi(object):
 
     def test_playing(self, mocker):
@@ -509,18 +606,21 @@ class TestXIdleTime(object):
         check = autosuspend.XIdleTime.create('name', parser['section'])
         assert check._timeout == 600
         assert check._ignore_process_re == re.compile(r'a^')
-        assert check._ignore_users_re == re.compile(r'^a')
+        assert check._ignore_users_re == re.compile(r'a^')
+        assert check._provide_sessions == check._list_sessions_sockets
 
     def test_create(self):
         parser = configparser.ConfigParser()
         parser.read_string('''[section]
                               timeout = 42
                               ignore_if_process = .*test
-                              ignore_users = test.*test''')
+                              ignore_users = test.*test
+                              method = logind''')
         check = autosuspend.XIdleTime.create('name', parser['section'])
         assert check._timeout == 42
         assert check._ignore_process_re == re.compile(r'.*test')
         assert check._ignore_users_re == re.compile(r'test.*test')
+        assert check._provide_sessions == check._list_sessions_logind
 
     def test_create_no_int(self):
         parser = configparser.ConfigParser()
@@ -542,6 +642,45 @@ class TestXIdleTime(object):
                               ignore_users = [[a-9]''')
         with pytest.raises(autosuspend.ConfigurationError):
             autosuspend.XIdleTime.create('name', parser['section'])
+
+    def test_create_unknown_method(self):
+        parser = configparser.ConfigParser()
+        parser.read_string('''[section]
+                              method = asdfasdf''')
+        with pytest.raises(autosuspend.ConfigurationError):
+            autosuspend.XIdleTime.create('name', parser['section'])
+
+    def test_list_sessions_logind(self, mocker):
+        mock = mocker.patch('autosuspend._list_logind_sessions')
+        mock.return_value = [('c1', {'Name': 'foo'}),
+                             ('c2', {'Display': 'asdfasf'}),
+                             ('c3', {'Name': 'hello', 'Display': 'nonumber'}),
+                             ('c4', {'Name': 'hello', 'Display': '3'})]
+
+        parser = configparser.ConfigParser()
+        parser.read_string('''[section]''')
+        check = autosuspend.XIdleTime.create('name', parser['section'])
+        assert check._list_sessions_logind() == [(3, 'hello')]
+
+    def test_list_sessions_socket(self, mocker):
+        mock_glob = mocker.patch('glob.glob')
+        mock_glob.return_value = ['/tmp/.X11-unix/X0',
+                                  '/tmp/.X11-unix/X42',
+                                  '/tmp/.X11-unix/Xnum']
+
+        stat_return = os.stat(os.path.realpath(__file__))
+        this_user = pwd.getpwuid(stat_return.st_uid)
+        mock_stat = mocker.patch('os.stat')
+        mock_stat.return_value = stat_return
+
+        mock_pwd = mocker.patch('pwd.getpwuid')
+        mock_pwd.return_value = this_user
+
+        parser = configparser.ConfigParser()
+        parser.read_string('''[section]''')
+        check = autosuspend.XIdleTime.create('name', parser['section'])
+        assert check._list_sessions_sockets() == [(0, this_user.pw_name),
+                                                  (42, this_user.pw_name)]
 
 
 class TestExternalCommand(object):
@@ -589,9 +728,9 @@ class TestXPath(object):
         mock_method = mocker.patch('requests.get', return_value=mock_reply)
 
         url = 'nourl'
-        assert autosuspend.XPath('foo', '/a', url).check() is not None
+        assert autosuspend.XPath('foo', '/a', url, 5).check() is not None
 
-        mock_method.assert_called_once_with(url)
+        mock_method.assert_called_once_with(url, timeout=5)
         text_property.assert_called_once_with()
 
     def test_not_matching(self, mocker):
@@ -601,7 +740,7 @@ class TestXPath(object):
         text_property.return_value = "<a></a>"
         mocker.patch('requests.get', return_value=mock_reply)
 
-        assert autosuspend.XPath('foo', '/b', 'nourl').check() is None
+        assert autosuspend.XPath('foo', '/b', 'nourl', 5).check() is None
 
     def test_broken_xml(self, mocker):
         with pytest.raises(autosuspend.TemporaryCheckError):
@@ -611,7 +750,7 @@ class TestXPath(object):
             text_property.return_value = "//broken"
             mocker.patch('requests.get', return_value=mock_reply)
 
-            autosuspend.XPath('foo', '/b', 'nourl').check()
+            autosuspend.XPath('foo', '/b', 'nourl', 5).check()
 
     def test_xpath_prevalidation(self):
         with pytest.raises(autosuspend.ConfigurationError,
@@ -632,6 +771,79 @@ class TestXPath(object):
                                url=nourl''')
             del parser['section'][entry]
             autosuspend.XPath.create('name', parser['section'])
+
+    def test_create_default_timeout(self):
+        parser = configparser.ConfigParser()
+        parser.read_string('''[section]
+                           xpath=/valid
+                           url=nourl''')
+        check = autosuspend.XPath.create('name', parser['section'])
+        assert check._timeout == 5
+
+    def test_create_timeout(self):
+        parser = configparser.ConfigParser()
+        parser.read_string('''[section]
+                           xpath=/valid
+                           url=nourl
+                           timeout=42''')
+        check = autosuspend.XPath.create('name', parser['section'])
+        assert check._timeout == 42
+
+    def test_create_invalid_timeout(self):
+        with pytest.raises(autosuspend.ConfigurationError,
+                           match=r"^Configuration error .*"):
+            parser = configparser.ConfigParser()
+            parser.read_string('''[section]
+                               xpath=/valid
+                               url=nourl
+                               timeout=xx''')
+            autosuspend.XPath.create('name', parser['section'])
+
+    def test_requests_exception(self, mocker):
+        with pytest.raises(autosuspend.TemporaryCheckError):
+            mock_method = mocker.patch('requests.get')
+            mock_method.side_effect = requests.exceptions.ReadTimeout()
+
+            autosuspend.XPath('foo', '/a', 'asdf', 5).check()
+
+
+class TestLogindSessionsIdle(object):
+
+    def test_smoke(self):
+        check = autosuspend.LogindSessionsIdle(
+            'test', ['tty', 'x11', 'wayland'], ['active', 'online'])
+        assert check._types == ['tty', 'x11', 'wayland']
+        assert check._states == ['active', 'online']
+        try:
+            # only run the test if the dbus module is available (not on travis)
+            import dbus  # noqa: F401
+            check.check()
+        except ImportError:
+            pass
+
+    def test_configure_defaults(self):
+        parser = configparser.ConfigParser()
+        parser.read_string('[section]')
+        check = autosuspend.LogindSessionsIdle.create(
+            'name', parser['section'])
+        assert check._types == ['tty', 'x11', 'wayland']
+        assert check._states == ['active', 'online']
+
+    def test_configure_types(self):
+        parser = configparser.ConfigParser()
+        parser.read_string('''[section]
+                           types=test, bla,foo''')
+        check = autosuspend.LogindSessionsIdle.create(
+            'name', parser['section'])
+        assert check._types == ['test', 'bla', 'foo']
+
+    def test_configure_states(self):
+        parser = configparser.ConfigParser()
+        parser.read_string('''[section]
+                           states=test, bla,foo''')
+        check = autosuspend.LogindSessionsIdle.create(
+            'name', parser['section'])
+        assert check._states == ['test', 'bla', 'foo']
 
 
 def test_execute_suspend(mocker):
