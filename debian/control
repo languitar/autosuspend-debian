@@ -12,7 +12,7 @@ Vcs-Browser: https://github.com/languitar/autosuspend-debian
 Package: autosuspend
 Architecture: all
 Depends: ${python3:Depends}, ${misc:Depends}
-Recommends: python3-mpd, python3-requests, python3-lxml, xprintidle
+Recommends: python3-mpd, python3-requests, python3-lxml, xprintidle, python3-dbus
 Description: daemon to suspend a system in case of inactivity
  A daemon to suspend a system in case of inactivity with the aim to reduce the
  power consumption. Inactivity is determined by a set of configurable checks.
