@@ -1,3 +1,9 @@
+autosuspend (1.1.0-1) unstable; urgency=medium
+
+  * New upstream version 1.1.0
+
+ -- Johannes Wienke <languitar@bird.lan>  Sat, 14 Apr 2018 10:11:21 +0000
+
 autosuspend (1.0.0-2) unstable; urgency=medium
 
   * Make suggested packages recommends, add xprintidle
