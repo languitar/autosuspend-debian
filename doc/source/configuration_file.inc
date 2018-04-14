@@ -29,6 +29,8 @@ These sections describe the checks to execute to determine inactivity.
 General Configuration
 ~~~~~~~~~~~~~~~~~~~~~
 
+.. program:: config-general
+
 The ``[general]`` section contains options controlling the overall behavior of the |project_program| daemon. These are:
 
 .. option:: interval
@@ -44,8 +46,17 @@ The ``[general]`` section contains options controlling the overall behavior of t
    The command to execute in case the host shall be suspended.
    This line can contain additional command line arguments to the command to execute.
 
+.. option:: woke_up_file
+
+   Location of a file that indicates to |project_program| that the computer has suspended since the last time checks were executed.
+   This file is usually created by a `systemd`_ service.
+   Thus, changing the location also requires adapting the respective service.
+   Refer to :ref:`systemd-integration` for further details.
+
 Check Configuration
 ~~~~~~~~~~~~~~~~~~~
+
+.. program:: config-check
 
 For each check to execute, a section with the name format ``[check.*]`` needs to be created.
 Each check has a name and an executing class which implements the behavior.
