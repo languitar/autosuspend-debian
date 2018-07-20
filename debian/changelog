@@ -1,3 +1,10 @@
+autosuspend (2.0.1-1) UNRELEASED; urgency=medium
+
+  * New upstream version 2.0.1
+  * Update package for new dependencies and description
+
+ -- Johannes Wienke <languitar@jaco.localdomain>  Fri, 20 Jul 2018 15:15:32 +0000
+
 autosuspend (1.1.0-1) unstable; urgency=medium
 
   * New upstream version 1.1.0
