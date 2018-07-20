@@ -1,11 +1,20 @@
 language: python
+sudo: false
 python:
-  - "3.5"
-  - "3.6"
-  - "nightly"
+  - 3.5
+  - 3.6
+  - nightly
+env:
+  - TASK=test
+  - TASK=integration
+matrix:
+  include:
+  - python: 3.6
+    env: TASK=checks
+  exclude:
+  - python: nightly
+    env: TASK=integration
 install:
-  - pip install pytest pytest-runner pytest-cov pytest-mock python-mpd2 psutil requests codecov lxml
+  - pip install tox-travis
 script:
-  - pytest --cov=autosuspend
-after_success:
-  - codecov
+  - tox

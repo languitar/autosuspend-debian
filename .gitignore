@@ -8,3 +8,11 @@
 /tags
 __pycache__
 /pytestdebug.log
+/doc/build/
+/env/
+/.ropeproject/
+/.mypy_cache/
+/.pytest_cache/
+/.python-version
+/.tox/
+/Session.vim
