@@ -12,12 +12,13 @@ Vcs-Browser: https://github.com/languitar/autosuspend-debian
 Package: autosuspend
 Architecture: all
 Depends: ${python3:Depends}, ${misc:Depends}
-Recommends: python3-mpd, python3-requests, python3-lxml, xprintidle, python3-dbus
+Recommends: python3-mpd, python3-requests, python3-lxml, xprintidle, python3-dbus, python3-icalendar, python3-dateutil, python3-tzlocal, python3-requests-file, iputils-ping
 Description: daemon to suspend a system in case of inactivity
- A daemon to suspend a system in case of inactivity with the aim to reduce the
- power consumption. Inactivity is determined by a set of configurable checks.
- Autosuspend periodically executes these checks, and if none of theme indicated
- activity, the system is suspended.
+ A daemon to automatically suspend and wake up a system. Inactivity and wake up
+ times are determined by a set of configurable checks.  Autosuspend periodically
+ executes these checks, and if none of theme indicated activity, the system is
+ suspended and automatically woken up in case of future wake up time was
+ detected.
  .
  Autosuspend does not depend on X11 and desktop environments and is therefore
  specifically intended for (home) servers. Most available checks address these
