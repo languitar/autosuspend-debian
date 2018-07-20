@@ -1,5 +1,6 @@
+from collections import namedtuple
 import configparser
-import logging
+import os
 import os.path
 import pwd
 import re
@@ -8,38 +9,37 @@ import subprocess
 import sys
 
 import psutil
-
 import pytest
-
 import requests
-import requests.exceptions
 
-import autosuspend
-
-
-class TestCheck(object):
-
-    class DummyCheck(autosuspend.Check):
-
-        @classmethod
-        def create(cls, name, config):
-            pass
-
-        def check(self):
-            pass
-
-    def test_name(self):
-        name = 'test'
-        assert self.DummyCheck(name).name == name
-
-    def test_name_default(self):
-        assert self.DummyCheck().name is not None
-
-    def test_str(self):
-        assert isinstance(str(self.DummyCheck('test')), str)
+from autosuspend.checks import (ConfigurationError,
+                                SevereCheckError,
+                                TemporaryCheckError)
+from autosuspend.checks.activity import (ActiveCalendarEvent,
+                                         ActiveConnection,
+                                         ExternalCommand,
+                                         Kodi,
+                                         KodiIdleTime,
+                                         Load,
+                                         LogindSessionsIdle,
+                                         Mpd,
+                                         NetworkBandwidth,
+                                         Ping,
+                                         Processes,
+                                         Smb,
+                                         Users,
+                                         XIdleTime,
+                                         XPath)
+from . import CheckTest
 
 
-class TestSmb(object):
+snic = namedtuple('snic', ['family', 'address', 'netmask', 'broadcast', 'ptp'])
+
+
+class TestSmb(CheckTest):
+
+    def create_instance(self, name):
+        return Smb(name)
 
     def test_no_connections(self, monkeypatch):
         def return_data(*args, **kwargs):
@@ -48,7 +48,7 @@ class TestSmb(object):
                 return f.read()
         monkeypatch.setattr(subprocess, 'check_output', return_data)
 
-        assert autosuspend.Smb('foo').check() is None
+        assert Smb('foo').check() is None
 
     def test_with_connections(self, monkeypatch):
         def return_data(*args, **kwargs):
@@ -57,22 +57,25 @@ class TestSmb(object):
                 return f.read()
         monkeypatch.setattr(subprocess, 'check_output', return_data)
 
-        assert autosuspend.Smb('foo').check() is not None
-        assert len(autosuspend.Smb('foo').check().splitlines()) == 3
+        assert Smb('foo').check() is not None
+        assert len(Smb('foo').check().splitlines()) == 3
 
     def test_call_error(self, mocker):
         mocker.patch('subprocess.check_output',
                      side_effect=subprocess.CalledProcessError(2, 'cmd'))
 
-        with pytest.raises(autosuspend.SevereCheckError):
-            autosuspend.Smb('foo').check()
+        with pytest.raises(SevereCheckError):
+            Smb('foo').check()
 
     def test_create(self):
-        assert isinstance(autosuspend.Smb.create('name', None),
-                          autosuspend.Smb)
+        assert isinstance(Smb.create('name', None), Smb)
 
 
-class TestUsers(object):
+class TestUsers(CheckTest):
+
+    def create_instance(self, name):
+        return Users(name, re.compile('.*'), re.compile('.*'),
+                     re.compile('.*'))
 
     @staticmethod
     def create_suser(name, terminal, host, started, pid):
@@ -88,12 +91,12 @@ class TestUsers(object):
             return []
         monkeypatch.setattr(psutil, 'users', data)
 
-        assert autosuspend.Users('users', re.compile('.*'), re.compile('.*'),
-                                 re.compile('.*')).check() is None
+        assert Users('users', re.compile('.*'), re.compile('.*'),
+                     re.compile('.*')).check() is None
 
     def test_smoke(self):
-        autosuspend.Users('users', re.compile('.*'), re.compile('.*'),
-                          re.compile('.*')).check()
+        Users('users', re.compile('.*'), re.compile('.*'),
+              re.compile('.*')).check()
 
     def test_matching_users(self, monkeypatch):
 
@@ -101,8 +104,8 @@ class TestUsers(object):
             return [self.create_suser('foo', 'pts1', 'host', 12345, 12345)]
         monkeypatch.setattr(psutil, 'users', data)
 
-        assert autosuspend.Users('users', re.compile('.*'), re.compile('.*'),
-                                 re.compile('.*')).check() is not None
+        assert Users('users', re.compile('.*'), re.compile('.*'),
+                     re.compile('.*')).check() is not None
 
     def test_non_matching_user(self, monkeypatch):
 
@@ -110,8 +113,8 @@ class TestUsers(object):
             return [self.create_suser('foo', 'pts1', 'host', 12345, 12345)]
         monkeypatch.setattr(psutil, 'users', data)
 
-        assert autosuspend.Users('users', re.compile('narf'), re.compile('.*'),
-                                 re.compile('.*')).check() is None
+        assert Users('users', re.compile('narf'), re.compile('.*'),
+                     re.compile('.*')).check() is None
 
     def test_create(self):
         parser = configparser.ConfigParser()
@@ -120,7 +123,7 @@ class TestUsers(object):
                            terminal = term.*term
                            host = host.*host''')
 
-        check = autosuspend.Users.create('name', parser['section'])
+        check = Users.create('name', parser['section'])
 
         assert check._user_regex == re.compile('name.*name')
         assert check._terminal_regex == re.compile('term.*term')
@@ -133,13 +136,16 @@ class TestUsers(object):
                            terminal = term.[[a-9]term
                            host = host.*host''')
 
-        with pytest.raises(autosuspend.ConfigurationError):
-            autosuspend.Users.create('name', parser['section'])
+        with pytest.raises(ConfigurationError):
+            Users.create('name', parser['section'])
 
 
-class TestProcesses(object):
+class TestProcesses(CheckTest):
 
-    class StubProcess(object):
+    def create_instance(self, name):
+        return Processes(name, ['foo'])
+
+    class StubProcess:
 
         def __init__(self, name):
             self._name = name
@@ -147,7 +153,7 @@ class TestProcesses(object):
         def name(self):
             return self._name
 
-    class RaisingProcess(object):
+    class RaisingProcess:
 
         def name(self):
             raise psutil.NoSuchProcess(42)
@@ -158,7 +164,7 @@ class TestProcesses(object):
             return [self.StubProcess('blubb'), self.StubProcess('nonmatching')]
         monkeypatch.setattr(psutil, 'process_iter', data)
 
-        assert autosuspend.Processes(
+        assert Processes(
             'foo', ['dummy', 'blubb', 'other']).check() is not None
 
     def test_ignore_no_such_process(self, monkeypatch):
@@ -167,7 +173,7 @@ class TestProcesses(object):
             return [self.RaisingProcess()]
         monkeypatch.setattr(psutil, 'process_iter', data)
 
-        autosuspend.Processes('foo', ['dummy']).check()
+        Processes('foo', ['dummy']).check()
 
     def test_non_matching_process(self, monkeypatch):
 
@@ -176,35 +182,68 @@ class TestProcesses(object):
                     self.StubProcess('nonmatching')]
         monkeypatch.setattr(psutil, 'process_iter', data)
 
-        assert autosuspend.Processes(
+        assert Processes(
             'foo', ['dummy', 'blubb', 'other']).check() is None
 
     def test_create(self):
         parser = configparser.ConfigParser()
         parser.read_string('''[section]
                            processes = foo, bar, narf''')
-        assert autosuspend.Processes.create(
+        assert Processes.create(
             'name', parser['section'])._processes == ['foo', 'bar', 'narf']
 
     def test_create_no_entry(self):
         parser = configparser.ConfigParser()
         parser.read_string('''[section]''')
-        with pytest.raises(autosuspend.ConfigurationError):
-            autosuspend.Processes.create('name', parser['section'])
+        with pytest.raises(ConfigurationError):
+            Processes.create('name', parser['section'])
 
 
-class TestActiveConnection(object):
+class TestActiveCalendarEvent(CheckTest):
+
+    def create_instance(self, name):
+        return ActiveCalendarEvent(name, url='asdfasdf', timeout=5)
+
+    def test_smoke(self, stub_server):
+        address = stub_server.resource_address('long-event.ics')
+        result = ActiveCalendarEvent('test', url=address, timeout=3).check()
+        assert result is not None
+        assert 'long-event' in result
+
+    def test_no_event(self, stub_server):
+        address = stub_server.resource_address('old-event.ics')
+        assert ActiveCalendarEvent(
+            'test', url=address, timeout=3).check() is None
+
+    def test_create(self):
+        parser = configparser.ConfigParser()
+        parser.read_string('''[section]
+                           url = foobar
+                           username = user
+                           password = pass
+                           timeout = 3''')
+        check = ActiveCalendarEvent.create('name', parser['section'])
+        assert check._url == 'foobar'
+        assert check._username == 'user'
+        assert check._password == 'pass'
+        assert check._timeout == 3
+
+
+class TestActiveConnection(CheckTest):
 
     MY_PORT = 22
     MY_ADDRESS = '123.456.123.456'
 
+    def create_instance(self, name):
+        return ActiveConnection(name, [10])
+
     def test_smoke(self):
-        autosuspend.ActiveConnection('foo', [22]).check()
+        ActiveConnection('foo', [22]).check()
 
     def test_connected(self, monkeypatch):
 
         def addresses():
-            return {'dummy': [psutil._common.snic(
+            return {'dummy': [snic(
                 socket.AF_INET, self.MY_ADDRESS, '255.255.255.0',
                 None, None)]}
 
@@ -217,7 +256,7 @@ class TestActiveConnection(object):
         monkeypatch.setattr(psutil, 'net_if_addrs', addresses)
         monkeypatch.setattr(psutil, 'net_connections', connections)
 
-        assert autosuspend.ActiveConnection(
+        assert ActiveConnection(
             'foo', [10, self.MY_PORT, 30]).check() is not None
 
     @pytest.mark.parametrize("connection", [
@@ -249,7 +288,7 @@ class TestActiveConnection(object):
     def test_not_connected(self, monkeypatch, connection):
 
         def addresses():
-            return {'dummy': [psutil._common.snic(
+            return {'dummy': [snic(
                 socket.AF_INET, self.MY_ADDRESS, '255.255.255.0',
                 None, None)]}
 
@@ -259,31 +298,34 @@ class TestActiveConnection(object):
         monkeypatch.setattr(psutil, 'net_if_addrs', addresses)
         monkeypatch.setattr(psutil, 'net_connections', connections)
 
-        assert autosuspend.ActiveConnection(
+        assert ActiveConnection(
             'foo', [10, self.MY_PORT, 30]).check() is None
 
     def test_create(self):
         parser = configparser.ConfigParser()
         parser.read_string('''[section]
                            ports = 10,20,30''')
-        assert autosuspend.ActiveConnection.create(
-            'name', parser['section'])._ports == set([10, 20, 30])
+        assert ActiveConnection.create(
+            'name', parser['section'])._ports == {10, 20, 30}
 
     def test_create_no_entry(self):
         parser = configparser.ConfigParser()
         parser.read_string('''[section]''')
-        with pytest.raises(autosuspend.ConfigurationError):
-            autosuspend.ActiveConnection.create('name', parser['section'])
+        with pytest.raises(ConfigurationError):
+            ActiveConnection.create('name', parser['section'])
 
     def test_create_no_number(self):
         parser = configparser.ConfigParser()
         parser.read_string('''[section]
                            ports = 10,20xx,30''')
-        with pytest.raises(autosuspend.ConfigurationError):
-            autosuspend.ActiveConnection.create('name', parser['section'])
+        with pytest.raises(ConfigurationError):
+            ActiveConnection.create('name', parser['section'])
 
 
-class TestLoad(object):
+class TestLoad(CheckTest):
+
+    def create_instance(self, name):
+        return Load(name, 0.4)
 
     def test_below(self, monkeypatch):
 
@@ -293,7 +335,7 @@ class TestLoad(object):
             return [0, threshold - 0.2, 0]
         monkeypatch.setattr(os, 'getloadavg', data)
 
-        assert autosuspend.Load('foo', threshold).check() is None
+        assert Load('foo', threshold).check() is None
 
     def test_above(self, monkeypatch):
 
@@ -303,28 +345,31 @@ class TestLoad(object):
             return [0, threshold + 0.2, 0]
         monkeypatch.setattr(os, 'getloadavg', data)
 
-        assert autosuspend.Load('foo', threshold).check() is not None
+        assert Load('foo', threshold).check() is not None
 
     def test_create(self):
         parser = configparser.ConfigParser()
         parser.read_string('''[section]
                            threshold = 3.2''')
-        assert autosuspend.Load.create(
+        assert Load.create(
             'name', parser['section'])._threshold == 3.2
 
     def test_create_no_number(self):
         parser = configparser.ConfigParser()
         parser.read_string('''[section]
                            threshold = narf''')
-        with pytest.raises(autosuspend.ConfigurationError):
-            autosuspend.Load.create('name', parser['section'])
+        with pytest.raises(ConfigurationError):
+            Load.create('name', parser['section'])
 
 
-class TestMpd(object):
+class TestMpd(CheckTest):
+
+    def create_instance(self, name):
+        return Mpd(name, None, None, None)
 
     def test_playing(self, monkeypatch):
 
-        check = autosuspend.Mpd('test', None, None, None)
+        check = Mpd('test', None, None, None)
 
         def get_state():
             return {'state': 'play'}
@@ -334,7 +379,7 @@ class TestMpd(object):
 
     def test_not_playing(self, monkeypatch):
 
-        check = autosuspend.Mpd('test', None, None, None)
+        check = Mpd('test', None, None, None)
 
         def get_state():
             return {'state': 'pause'}
@@ -356,7 +401,7 @@ class TestMpd(object):
         port = 42
         timeout = 17
 
-        assert autosuspend.Mpd('name', host, port, timeout).check() is not None
+        assert Mpd('name', host, port, timeout).check() is not None
 
         timeout_property.assert_called_once_with(timeout)
         mock_instance.connect.assert_called_once_with(host, port)
@@ -366,14 +411,14 @@ class TestMpd(object):
 
     def test_handle_connection_errors(self):
 
-        check = autosuspend.Mpd('test', None, None, None)
+        check = Mpd('test', None, None, None)
 
         def _get_state():
             raise ConnectionError()
 
         check._get_state = _get_state
 
-        with pytest.raises(autosuspend.TemporaryCheckError):
+        with pytest.raises(TemporaryCheckError):
             check.check()
 
     def test_create(self):
@@ -383,7 +428,7 @@ class TestMpd(object):
                            port = 1234
                            timeout = 12''')
 
-        check = autosuspend.Mpd.create('name', parser['section'])
+        check = Mpd.create('name', parser['section'])
 
         assert check._host == 'host'
         assert check._port == 1234
@@ -396,8 +441,8 @@ class TestMpd(object):
                            port = string
                            timeout = 12''')
 
-        with pytest.raises(autosuspend.ConfigurationError):
-            autosuspend.Mpd.create('name', parser['section'])
+        with pytest.raises(ConfigurationError):
+            Mpd.create('name', parser['section'])
 
     def test_create_timeout_no_number(self):
         parser = configparser.ConfigParser()
@@ -406,17 +451,20 @@ class TestMpd(object):
                            port = 10
                            timeout = string''')
 
-        with pytest.raises(autosuspend.ConfigurationError):
-            autosuspend.Mpd.create('name', parser['section'])
+        with pytest.raises(ConfigurationError):
+            Mpd.create('name', parser['section'])
 
 
-class TestNetworkBandwidth(object):
+class TestNetworkBandwidth(CheckTest):
 
-    def test_smoke(self):
-        check = autosuspend.NetworkBandwidth(
+    def create_instance(self, name):
+        return NetworkBandwidth(name, psutil.net_if_addrs().keys(), 0, 0)
+
+    def test_smoke(self, stub_server):
+        check = NetworkBandwidth(
             'name', psutil.net_if_addrs().keys(), 0, 0)
         # make some traffic
-        requests.get('https://www.google.de/')
+        requests.get(stub_server.resource_address(''))
         assert check.check() is not None
 
     @pytest.fixture
@@ -432,8 +480,8 @@ interfaces = foo, baz
 threshold_send = 200
 threshold_receive = 300
 ''')
-        check = autosuspend.NetworkBandwidth.create('name', parser['section'])
-        assert set(check._interfaces) == set(['foo', 'baz'])
+        check = NetworkBandwidth.create('name', parser['section'])
+        assert set(check._interfaces) == {'foo', 'baz'}
         assert check._threshold_send == 200
         assert check._threshold_receive == 300
 
@@ -443,8 +491,8 @@ threshold_receive = 300
 [section]
 interfaces = foo, baz
 ''')
-        check = autosuspend.NetworkBandwidth.create('name', parser['section'])
-        assert set(check._interfaces) == set(['foo', 'baz'])
+        check = NetworkBandwidth.create('name', parser['section'])
+        assert set(check._interfaces) == {'foo', 'baz'}
         assert check._threshold_send == 100
         assert check._threshold_receive == 100
 
@@ -480,33 +528,37 @@ threshold_receive = xxx
     def test_create_error(self, mock_interfaces, config, error_match):
         parser = configparser.ConfigParser()
         parser.read_string(config)
-        with pytest.raises(autosuspend.ConfigurationError, match=error_match):
-            autosuspend.NetworkBandwidth.create('name', parser['section'])
+        with pytest.raises(ConfigurationError, match=error_match):
+            NetworkBandwidth.create('name', parser['section'])
 
     @pytest.mark.parametrize('send_threshold,receive_threshold,match', [
         (sys.float_info.max, 0, 'receive'),
         (0, sys.float_info.max, 'sending'),
     ])
-    def test_with_activity(self, send_threshold, receive_threshold, match):
-        check = autosuspend.NetworkBandwidth(
+    def test_with_activity(self, send_threshold, receive_threshold, match,
+                           stub_server):
+        check = NetworkBandwidth(
             'name', psutil.net_if_addrs().keys(),
             send_threshold, receive_threshold)
         # make some traffic
-        requests.get('https://www.google.de/')
+        requests.get(stub_server.resource_address(''))
         res = check.check()
         assert res is not None
         assert match in res
 
-    def test_no_activity(self):
-        check = autosuspend.NetworkBandwidth(
+    def test_no_activity(self, stub_server):
+        check = NetworkBandwidth(
             'name', psutil.net_if_addrs().keys(),
             sys.float_info.max, sys.float_info.max)
         # make some traffic
-        requests.get('https://www.google.de/')
+        requests.get(stub_server.resource_address(''))
         assert check.check() is None
 
 
-class TestKodi(object):
+class TestKodi(CheckTest):
+
+    def create_instance(self, name):
+        return Kodi(name, 'url', 10)
 
     def test_playing(self, mocker):
         mock_reply = mocker.MagicMock()
@@ -515,7 +567,7 @@ class TestKodi(object):
             "result": [{"playerid": 0, "type": "audio"}]}
         mocker.patch('requests.get', return_value=mock_reply)
 
-        assert autosuspend.Kodi('foo', 'url', 10).check() is not None
+        assert Kodi('foo', 'url', 10).check() is not None
 
         mock_reply.json.assert_called_once_with()
 
@@ -525,7 +577,7 @@ class TestKodi(object):
             "id": 1, "jsonrpc": "2.0", "result": []}
         mocker.patch('requests.get', return_value=mock_reply)
 
-        assert autosuspend.Kodi('foo', 'url', 10).check() is None
+        assert Kodi('foo', 'url', 10).check() is None
 
         mock_reply.json.assert_called_once_with()
 
@@ -534,15 +586,15 @@ class TestKodi(object):
         mock_reply.json.return_value = {"id": 1, "jsonrpc": "2.0"}
         mocker.patch('requests.get', return_value=mock_reply)
 
-        with pytest.raises(autosuspend.TemporaryCheckError):
-            autosuspend.Kodi('foo', 'url', 10).check()
+        with pytest.raises(TemporaryCheckError):
+            Kodi('foo', 'url', 10).check()
 
     def test_request_error(self, mocker):
         mocker.patch('requests.get',
                      side_effect=requests.exceptions.RequestException())
 
-        with pytest.raises(autosuspend.TemporaryCheckError):
-            autosuspend.Kodi('foo', 'url', 10).check()
+        with pytest.raises(TemporaryCheckError):
+            Kodi('foo', 'url', 10).check()
 
     def test_create(self):
         parser = configparser.ConfigParser()
@@ -550,7 +602,7 @@ class TestKodi(object):
                            url = anurl
                            timeout = 12''')
 
-        check = autosuspend.Kodi.create('name', parser['section'])
+        check = Kodi.create('name', parser['section'])
 
         assert check._url == 'anurl'
         assert check._timeout == 12
@@ -561,11 +613,111 @@ class TestKodi(object):
                            url = anurl
                            timeout = string''')
 
-        with pytest.raises(autosuspend.ConfigurationError):
-            autosuspend.Kodi.create('name', parser['section'])
+        with pytest.raises(ConfigurationError):
+            Kodi.create('name', parser['section'])
 
 
-class TestPing(object):
+class TestKodiIdleTime(CheckTest):
+
+    def create_instance(self, name):
+        return KodiIdleTime(name, 'url', timeout=10, idle_time=10)
+
+    def test_create(self):
+        parser = configparser.ConfigParser()
+        parser.read_string('''[section]
+                           url = anurl
+                           timeout = 12
+                           idle_time = 42''')
+
+        check = KodiIdleTime.create('name', parser['section'])
+
+        assert check._url == 'anurl'
+        assert check._timeout == 12
+        assert check._idle_time == 42
+
+    def test_create_timeout_no_number(self):
+        parser = configparser.ConfigParser()
+        parser.read_string('''[section]
+                           url = anurl
+                           timeout = string''')
+
+        with pytest.raises(ConfigurationError):
+            KodiIdleTime.create('name', parser['section'])
+
+    def test_create_idle_time_no_number(self):
+        parser = configparser.ConfigParser()
+        parser.read_string('''[section]
+                           url = anurl
+                           idle_time = string''')
+
+        with pytest.raises(ConfigurationError):
+            KodiIdleTime.create('name', parser['section'])
+
+    def test_no_result(self, mocker):
+        mock_reply = mocker.MagicMock()
+        mock_reply.json.return_value = {"id": 1, "jsonrpc": "2.0"}
+        mocker.patch('requests.get', return_value=mock_reply)
+
+        with pytest.raises(TemporaryCheckError):
+            KodiIdleTime('foo', 'url', 10, 42).check()
+
+    def test_result_is_list(self, mocker):
+        mock_reply = mocker.MagicMock()
+        mock_reply.json.return_value = {"id": 1, "jsonrpc": "2.0",
+                                        "result": []}
+        mocker.patch('requests.get', return_value=mock_reply)
+
+        with pytest.raises(TemporaryCheckError):
+            KodiIdleTime('foo', 'url', 10, 42).check()
+
+    def test_result_no_entry(self, mocker):
+        mock_reply = mocker.MagicMock()
+        mock_reply.json.return_value = {"id": 1, "jsonrpc": "2.0",
+                                        "result": {}}
+        mocker.patch('requests.get', return_value=mock_reply)
+
+        with pytest.raises(TemporaryCheckError):
+            KodiIdleTime('foo', 'url', 10, 42).check()
+
+    def test_result_wrong_entry(self, mocker):
+        mock_reply = mocker.MagicMock()
+        mock_reply.json.return_value = {"id": 1, "jsonrpc": "2.0",
+                                        "result": {"narf": True}}
+        mocker.patch('requests.get', return_value=mock_reply)
+
+        with pytest.raises(TemporaryCheckError):
+            KodiIdleTime('foo', 'url', 10, 42).check()
+
+    def test_active(self, mocker):
+        mock_reply = mocker.MagicMock()
+        mock_reply.json.return_value = {"id": 1, "jsonrpc": "2.0",
+                                        "result": {
+                                            "System.IdleTime(42)": True}}
+        mocker.patch('requests.get', return_value=mock_reply)
+
+        assert KodiIdleTime('foo', 'url', 10, 42).check() is not None
+
+    def test_inactive(self, mocker):
+        mock_reply = mocker.MagicMock()
+        mock_reply.json.return_value = {"id": 1, "jsonrpc": "2.0",
+                                        "result": {
+                                            "System.IdleTime(42)": False}}
+        mocker.patch('requests.get', return_value=mock_reply)
+
+        assert KodiIdleTime('foo', 'url', 10, 42).check() is None
+
+    def test_request_error(self, mocker):
+        mocker.patch('requests.get',
+                     side_effect=requests.exceptions.RequestException())
+
+        with pytest.raises(TemporaryCheckError):
+            KodiIdleTime('foo', 'url', 10, 42).check()
+
+
+class TestPing(CheckTest):
+
+    def create_instance(self, name):
+        return Ping(name, '8.8.8.8')
 
     def test_smoke(self, mocker):
         mock = mocker.patch('subprocess.call')
@@ -573,7 +725,7 @@ class TestPing(object):
 
         hosts = ['abc', '129.123.145.42']
 
-        assert autosuspend.Ping('name', hosts).check() is None
+        assert Ping('name', hosts).check() is None
 
         assert mock.call_count == len(hosts)
         for (args, _), host in zip(mock.call_args_list, hosts):
@@ -582,28 +734,31 @@ class TestPing(object):
     def test_matching(self, mocker):
         mock = mocker.patch('subprocess.call')
         mock.return_value = 0
-        assert autosuspend.Ping('name', ['foo']).check() is not None
+        assert Ping('name', ['foo']).check() is not None
 
     def test_create_missing_hosts(self):
         parser = configparser.ConfigParser()
         parser.read_string('''[section]''')
-        with pytest.raises(autosuspend.ConfigurationError):
-            autosuspend.Ping.create('name', parser['section'])
+        with pytest.raises(ConfigurationError):
+            Ping.create('name', parser['section'])
 
     def test_create_host_splitting(self):
         parser = configparser.ConfigParser()
         parser.read_string('''[section]
                            hosts=a,b,c''')
-        ping = autosuspend.Ping.create('name', parser['section'])
+        ping = Ping.create('name', parser['section'])
         assert ping._hosts == ['a', 'b', 'c']
 
 
-class TestXIdleTime(object):
+class TestXIdleTime(CheckTest):
+
+    def create_instance(self, name):
+        return XIdleTime(name, 10, 'sockets', None, None)
 
     def test_create_default(self):
         parser = configparser.ConfigParser()
         parser.read_string('''[section]''')
-        check = autosuspend.XIdleTime.create('name', parser['section'])
+        check = XIdleTime.create('name', parser['section'])
         assert check._timeout == 600
         assert check._ignore_process_re == re.compile(r'a^')
         assert check._ignore_users_re == re.compile(r'a^')
@@ -616,7 +771,7 @@ class TestXIdleTime(object):
                               ignore_if_process = .*test
                               ignore_users = test.*test
                               method = logind''')
-        check = autosuspend.XIdleTime.create('name', parser['section'])
+        check = XIdleTime.create('name', parser['section'])
         assert check._timeout == 42
         assert check._ignore_process_re == re.compile(r'.*test')
         assert check._ignore_users_re == re.compile(r'test.*test')
@@ -626,32 +781,32 @@ class TestXIdleTime(object):
         parser = configparser.ConfigParser()
         parser.read_string('''[section]
                               timeout = string''')
-        with pytest.raises(autosuspend.ConfigurationError):
-            autosuspend.XIdleTime.create('name', parser['section'])
+        with pytest.raises(ConfigurationError):
+            XIdleTime.create('name', parser['section'])
 
     def test_create_broken_process_re(self):
         parser = configparser.ConfigParser()
         parser.read_string('''[section]
                               ignore_if_process = [[a-9]''')
-        with pytest.raises(autosuspend.ConfigurationError):
-            autosuspend.XIdleTime.create('name', parser['section'])
+        with pytest.raises(ConfigurationError):
+            XIdleTime.create('name', parser['section'])
 
     def test_create_broken_users_re(self):
         parser = configparser.ConfigParser()
         parser.read_string('''[section]
                               ignore_users = [[a-9]''')
-        with pytest.raises(autosuspend.ConfigurationError):
-            autosuspend.XIdleTime.create('name', parser['section'])
+        with pytest.raises(ConfigurationError):
+            XIdleTime.create('name', parser['section'])
 
     def test_create_unknown_method(self):
         parser = configparser.ConfigParser()
         parser.read_string('''[section]
                               method = asdfasdf''')
-        with pytest.raises(autosuspend.ConfigurationError):
-            autosuspend.XIdleTime.create('name', parser['section'])
+        with pytest.raises(ConfigurationError):
+            XIdleTime.create('name', parser['section'])
 
     def test_list_sessions_logind(self, mocker):
-        mock = mocker.patch('autosuspend._list_logind_sessions')
+        mock = mocker.patch('autosuspend.checks.activity.list_logind_sessions')
         mock.return_value = [('c1', {'Name': 'foo'}),
                              ('c2', {'Display': 'asdfasf'}),
                              ('c3', {'Name': 'hello', 'Display': 'nonumber'}),
@@ -659,7 +814,7 @@ class TestXIdleTime(object):
 
         parser = configparser.ConfigParser()
         parser.read_string('''[section]''')
-        check = autosuspend.XIdleTime.create('name', parser['section'])
+        check = XIdleTime.create('name', parser['section'])
         assert check._list_sessions_logind() == [(3, 'hello')]
 
     def test_list_sessions_socket(self, mocker):
@@ -678,32 +833,22 @@ class TestXIdleTime(object):
 
         parser = configparser.ConfigParser()
         parser.read_string('''[section]''')
-        check = autosuspend.XIdleTime.create('name', parser['section'])
+        check = XIdleTime.create('name', parser['section'])
         assert check._list_sessions_sockets() == [(0, this_user.pw_name),
                                                   (42, this_user.pw_name)]
 
 
-class TestExternalCommand(object):
+class TestExternalCommand(CheckTest):
 
-    def test_create(self):
-        parser = configparser.ConfigParser()
-        parser.read_string('''[section]
-                              command = narf bla  ''')
-        check = autosuspend.ExternalCommand.create('name', parser['section'])
-        assert check._command == 'narf bla'
-
-    def test_create_no_command(self):
-        parser = configparser.ConfigParser()
-        parser.read_string('''[section]''')
-        with pytest.raises(autosuspend.ConfigurationError):
-            autosuspend.ExternalCommand.create('name', parser['section'])
+    def create_instance(self, name):
+        return ExternalCommand(name, 'asdfasdf')
 
     def test_check(self, mocker):
         mock = mocker.patch('subprocess.check_call')
         parser = configparser.ConfigParser()
         parser.read_string('''[section]
                               command = foo bar''')
-        assert autosuspend.ExternalCommand.create(
+        assert ExternalCommand.create(
             'name', parser['section']).check() is not None
         mock.assert_called_once_with('foo bar', shell=True)
 
@@ -713,104 +858,72 @@ class TestExternalCommand(object):
         parser = configparser.ConfigParser()
         parser.read_string('''[section]
                               command = foo bar''')
-        assert autosuspend.ExternalCommand.create(
+        assert ExternalCommand.create(
             'name', parser['section']).check() is None
         mock.assert_called_once_with('foo bar', shell=True)
 
 
-class TestXPath(object):
+class TestXPath(CheckTest):
+
+    def create_instance(self, name):
+        return XPath(name=name, url='url', timeout=5,
+                     username='userx', password='pass',
+                     xpath='/b')
 
     def test_matching(self, mocker):
         mock_reply = mocker.MagicMock()
-        text_property = mocker.PropertyMock()
-        type(mock_reply).text = text_property
-        text_property.return_value = "<a></a>"
-        mock_method = mocker.patch('requests.get', return_value=mock_reply)
+        content_property = mocker.PropertyMock()
+        type(mock_reply).content = content_property
+        content_property.return_value = "<a></a>"
+        mock_method = mocker.patch('requests.Session.get',
+                                   return_value=mock_reply)
 
         url = 'nourl'
-        assert autosuspend.XPath('foo', '/a', url, 5).check() is not None
+        assert XPath('foo', xpath='/a', url=url, timeout=5).check() is not None
 
         mock_method.assert_called_once_with(url, timeout=5)
-        text_property.assert_called_once_with()
+        content_property.assert_called_once_with()
 
     def test_not_matching(self, mocker):
         mock_reply = mocker.MagicMock()
-        text_property = mocker.PropertyMock()
-        type(mock_reply).text = text_property
-        text_property.return_value = "<a></a>"
-        mocker.patch('requests.get', return_value=mock_reply)
+        content_property = mocker.PropertyMock()
+        type(mock_reply).content = content_property
+        content_property.return_value = "<a></a>"
+        mocker.patch('requests.Session.get', return_value=mock_reply)
 
-        assert autosuspend.XPath('foo', '/b', 'nourl', 5).check() is None
+        assert XPath('foo', xpath='/b', url='nourl', timeout=5).check() is None
 
-    def test_broken_xml(self, mocker):
-        with pytest.raises(autosuspend.TemporaryCheckError):
-            mock_reply = mocker.MagicMock()
-            text_property = mocker.PropertyMock()
-            type(mock_reply).text = text_property
-            text_property.return_value = "//broken"
-            mocker.patch('requests.get', return_value=mock_reply)
-
-            autosuspend.XPath('foo', '/b', 'nourl', 5).check()
-
-    def test_xpath_prevalidation(self):
-        with pytest.raises(autosuspend.ConfigurationError,
-                           match=r'^Invalid xpath.*'):
-            parser = configparser.ConfigParser()
-            parser.read_string('''[section]
-                               xpath=|34/ad
-                               url=nourl''')
-            autosuspend.XPath.create('name', parser['section'])
-
-    @pytest.mark.parametrize('entry,', ['xpath', 'url'])
-    def test_missing_config_entry(self, entry):
-        with pytest.raises(autosuspend.ConfigurationError,
-                           match=r"^No '" + entry + "'.*"):
-            parser = configparser.ConfigParser()
-            parser.read_string('''[section]
-                               xpath=/valid
-                               url=nourl''')
-            del parser['section'][entry]
-            autosuspend.XPath.create('name', parser['section'])
-
-    def test_create_default_timeout(self):
+    def test_create(self):
         parser = configparser.ConfigParser()
         parser.read_string('''[section]
-                           xpath=/valid
-                           url=nourl''')
-        check = autosuspend.XPath.create('name', parser['section'])
-        assert check._timeout == 5
-
-    def test_create_timeout(self):
-        parser = configparser.ConfigParser()
-        parser.read_string('''[section]
-                           xpath=/valid
-                           url=nourl
-                           timeout=42''')
-        check = autosuspend.XPath.create('name', parser['section'])
+                           url = url
+                           xpath = /xpath
+                           username = user
+                           password = pass
+                           timeout = 42''')
+        check = XPath.create('name', parser['section'])
+        assert check._xpath == '/xpath'
+        assert check._url == 'url'
+        assert check._username == 'user'
+        assert check._password == 'pass'
         assert check._timeout == 42
 
-    def test_create_invalid_timeout(self):
-        with pytest.raises(autosuspend.ConfigurationError,
-                           match=r"^Configuration error .*"):
-            parser = configparser.ConfigParser()
-            parser.read_string('''[section]
-                               xpath=/valid
-                               url=nourl
-                               timeout=xx''')
-            autosuspend.XPath.create('name', parser['section'])
-
-    def test_requests_exception(self, mocker):
-        with pytest.raises(autosuspend.TemporaryCheckError):
-            mock_method = mocker.patch('requests.get')
-            mock_method.side_effect = requests.exceptions.ReadTimeout()
-
-            autosuspend.XPath('foo', '/a', 'asdf', 5).check()
+    def test_network_errors_are_passed(self, stub_auth_server):
+        with pytest.raises(TemporaryCheckError):
+            XPath(name='name',
+                  url=stub_auth_server.resource_address('data.txt'),
+                  timeout=5, username='userx', password='pass',
+                  xpath='/b').request()
 
 
-class TestLogindSessionsIdle(object):
+class TestLogindSessionsIdle(CheckTest):
+
+    def create_instance(self, name):
+        return LogindSessionsIdle(
+            name, ['tty', 'x11', 'wayland'], ['active', 'online'])
 
     def test_smoke(self):
-        check = autosuspend.LogindSessionsIdle(
+        check = LogindSessionsIdle(
             'test', ['tty', 'x11', 'wayland'], ['active', 'online'])
         assert check._types == ['tty', 'x11', 'wayland']
         assert check._states == ['active', 'online']
@@ -824,8 +937,7 @@ class TestLogindSessionsIdle(object):
     def test_configure_defaults(self):
         parser = configparser.ConfigParser()
         parser.read_string('[section]')
-        check = autosuspend.LogindSessionsIdle.create(
-            'name', parser['section'])
+        check = LogindSessionsIdle.create('name', parser['section'])
         assert check._types == ['tty', 'x11', 'wayland']
         assert check._states == ['active', 'online']
 
@@ -833,182 +945,12 @@ class TestLogindSessionsIdle(object):
         parser = configparser.ConfigParser()
         parser.read_string('''[section]
                            types=test, bla,foo''')
-        check = autosuspend.LogindSessionsIdle.create(
-            'name', parser['section'])
+        check = LogindSessionsIdle.create('name', parser['section'])
         assert check._types == ['test', 'bla', 'foo']
 
     def test_configure_states(self):
         parser = configparser.ConfigParser()
         parser.read_string('''[section]
                            states=test, bla,foo''')
-        check = autosuspend.LogindSessionsIdle.create(
-            'name', parser['section'])
+        check = LogindSessionsIdle.create('name', parser['section'])
         assert check._states == ['test', 'bla', 'foo']
-
-
-def test_execute_suspend(mocker):
-    mock = mocker.patch('subprocess.check_call')
-    command = ['foo', 'bar']
-    autosuspend.execute_suspend(command)
-    mock.assert_called_once_with(command, shell=True)
-
-
-def test_execute_suspend_call_exception(mocker):
-    mock = mocker.patch('subprocess.check_call')
-    command = ['foo', 'bar']
-    mock.side_effect = subprocess.CalledProcessError(2, command)
-
-    spy = mocker.spy(autosuspend._logger, 'warning')
-
-    autosuspend.execute_suspend(command)
-
-    mock.assert_called_once_with(command, shell=True)
-    assert spy.call_count == 1
-
-
-def test_configure_logging_debug(mocker):
-    mock = mocker.patch('logging.basicConfig')
-
-    autosuspend.configure_logging(True)
-
-    mock.assert_called_once_with(level=logging.DEBUG)
-
-
-def test_configure_logging_standard(mocker):
-    mock = mocker.patch('logging.basicConfig')
-
-    autosuspend.configure_logging(False)
-
-    mock.assert_called_once_with(level=logging.WARNING)
-
-
-def test_configure_logging_file(mocker):
-    mock = mocker.patch('logging.config.fileConfig')
-
-    # anything that is not a boolean is treated like a file
-    autosuspend.configure_logging(42)
-
-    mock.assert_called_once_with(42)
-
-
-def test_configure_logging_file_fallback(mocker):
-    mock = mocker.patch('logging.config.fileConfig',
-                        side_effect=RuntimeError())
-    mock_basic = mocker.patch('logging.basicConfig')
-
-    # anything that is not a boolean is treated like a file
-    autosuspend.configure_logging(42)
-
-    mock.assert_called_once_with(42)
-    mock_basic.assert_called_once_with(level=logging.WARNING)
-
-
-def test_set_up_checks(mocker):
-    mock_class = mocker.patch('autosuspend.Mpd')
-    mock_class.create.return_value = mocker.MagicMock(spec=autosuspend.Check)
-
-    parser = configparser.ConfigParser()
-    parser.read_string('''[check.Foo]
-                       class = Mpd
-                       enabled = True''')
-
-    autosuspend.set_up_checks(parser)
-
-    mock_class.create.assert_called_once_with('Foo', parser['check.Foo'])
-
-
-def test_set_up_checks_not_enabled(mocker):
-    mock_class = mocker.patch('autosuspend.Mpd')
-    mock_class.create.return_value = mocker.MagicMock(spec=autosuspend.Check)
-
-    parser = configparser.ConfigParser()
-    parser.read_string('''[check.Foo]
-                       class = Mpd
-                       enabled = False''')
-
-    with pytest.raises(autosuspend.ConfigurationError):
-        autosuspend.set_up_checks(parser)
-
-
-def test_set_up_checks_no_such_class(mocker):
-    parser = configparser.ConfigParser()
-    parser.read_string('''[check.Foo]
-                       class = FooBarr
-                       enabled = True''')
-    with pytest.raises(autosuspend.ConfigurationError):
-        autosuspend.set_up_checks(parser)
-
-
-def test_set_up_checks_not_a_check(mocker):
-    mock_class = mocker.patch('autosuspend.Mpd')
-    mock_class.create.return_value = mocker.MagicMock()
-
-    parser = configparser.ConfigParser()
-    parser.read_string('''[check.Foo]
-                       class = Mpd
-                       enabled = True''')
-
-    with pytest.raises(autosuspend.ConfigurationError):
-        autosuspend.set_up_checks(parser)
-
-    mock_class.create.assert_called_once_with('Foo', parser['check.Foo'])
-
-
-class TestExecuteChecks(object):
-
-    def test_no_checks(self, mocker):
-        assert autosuspend.execute_checks(
-            [], False, mocker.MagicMock()) is False
-
-    def test_matches(self, mocker):
-        matching_check = mocker.MagicMock(spec=autosuspend.Check)
-        matching_check.name = 'foo'
-        matching_check.check.return_value = "matches"
-        assert autosuspend.execute_checks(
-            [matching_check], False, mocker.MagicMock()) is True
-        matching_check.check.assert_called_once_with()
-
-    def test_only_first_called(self, mocker):
-        matching_check = mocker.MagicMock(spec=autosuspend.Check)
-        matching_check.name = 'foo'
-        matching_check.check.return_value = "matches"
-        second_check = mocker.MagicMock()
-        second_check.name = 'bar'
-        second_check.check.return_value = "matches"
-
-        assert autosuspend.execute_checks(
-            [matching_check, second_check],
-            False,
-            mocker.MagicMock()) is True
-        matching_check.check.assert_called_once_with()
-        second_check.check.assert_not_called()
-
-    def test_all_called(self, mocker):
-        matching_check = mocker.MagicMock(spec=autosuspend.Check)
-        matching_check.name = 'foo'
-        matching_check.check.return_value = "matches"
-        second_check = mocker.MagicMock()
-        second_check.name = 'bar'
-        second_check.check.return_value = "matches"
-
-        assert autosuspend.execute_checks(
-            [matching_check, second_check],
-            True,
-            mocker.MagicMock()) is True
-        matching_check.check.assert_called_once_with()
-        second_check.check.assert_called_once_with()
-
-    def test_ignore_temporary_errors(self, mocker):
-        matching_check = mocker.MagicMock(spec=autosuspend.Check)
-        matching_check.name = 'foo'
-        matching_check.check.side_effect = autosuspend.TemporaryCheckError()
-        second_check = mocker.MagicMock()
-        second_check.name = 'bar'
-        second_check.check.return_value = "matches"
-
-        assert autosuspend.execute_checks(
-            [matching_check, second_check],
-            False,
-            mocker.MagicMock()) is True
-        matching_check.check.assert_called_once_with()
-        second_check.check.assert_called_once_with()
