@@ -1,3 +1,7 @@
+Remove data file installation from setup.py
+
+Manual handling is required due to the inflexibility of distutils.
+
 diff --git a/setup.py b/setup.py
 index 19d4195..33a5601 100644
 --- a/setup.py

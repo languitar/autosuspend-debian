@@ -1,4 +1,4 @@
-autosuspend.conf /etc
-autosuspend-logging.conf /etc
-autosuspend.service /lib/systemd/system
-autosuspend-detect-suspend.service /lib/systemd/system
+data/autosuspend.conf /etc
+data/autosuspend-logging.conf /etc
+data/autosuspend.service /lib/systemd/system
+data/autosuspend-detect-suspend.service /lib/systemd/system
