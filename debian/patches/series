@@ -1,2 +1,3 @@
+default-systemctl-patch-config.patch
 manual-data-files-installation.patch
 remove-sphinx-issues.patch

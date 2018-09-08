@@ -1,3 +1,9 @@
+autosuspend (2.0.1-2) unstable; urgency=medium
+
+  * Fix path of systemctl in default config for Debian conventions
+
+ -- Johannes Wienke <languitar@bird.lan>  Sat, 08 Sep 2018 12:24:30 +0000
+
 autosuspend (2.0.1-1) unstable; urgency=medium
 
   * New upstream version 2.0.1
