@@ -1,8 +1,47 @@
-Available checks
-----------------
+Available activity checks
+-------------------------
 
 The following checks for activity are currently implemented.
 Each of the is described with its available configuration options and required optional dependencies.
+
+ActiveCalendarEvent
+~~~~~~~~~~~~~~~~~~~
+
+.. program:: check-active-calendar-event
+
+Checks an online `iCalendar`_ file for events that are currently running.
+If so, this indicates activity and prevents suspending the system.
+Thus, a calendar can be provided with times at which the system should not go to sleep.
+If this calendar resides on an online service like a groupware it might even be possible to invite the system.
+
+Options
+^^^^^^^
+
+.. option:: url
+
+   The URL to query for the iCalendar file
+
+.. option:: timeout
+
+   Timeout for executed requests in seconds. Default: 5.
+
+.. option:: username
+
+   Optional user name to use for authenticating at a server requiring authentication.
+   If used, also a password must be provided.
+
+.. option:: password
+
+   Optional password to use for authenticating at a server requiring authentication.
+   If used, also a user name must be provided.
+
+Requirements
+^^^^^^^^^^^^
+
+* `requests`_
+* `icalendar <python-icalendar_>`_
+* `dateutil`_
+* `tzlocal`_
 
 ActiveConnection
 ~~~~~~~~~~~~~~~~
@@ -60,6 +99,57 @@ Options
 .. option:: timeout
 
    Request timeout in seconds, default: ``5``
+
+.. option:: username
+
+   Optional user name to use for authenticating at a server requiring authentication.
+   If used, also a password must be provided.
+
+.. option:: password
+
+   Optional password to use for authenticating at a server requiring authentication.
+   If used, also a user name must be provided.
+
+Requirements
+^^^^^^^^^^^^
+
+-  `requests`_
+
+KodiIdleTime
+~~~~~~~~~~~~
+
+.. program:: check-kodi-idle-time
+
+Checks whether there has been interaction with the Kodi user interface recently.
+This prevents suspending the system in case someone is currently browsing collections etc.
+This check is redundant to ``XIdleTime`` on systems using an X server, but might be necessary in case Kodi is used standalone.
+It does not replace the ``Kodi`` check, as the idle time is not updated when media is playing.
+
+Options
+^^^^^^^
+
+.. option:: idle_time
+
+   Marks the system active in case a user interaction has appeared within the this amount of seconds until now.
+   Default: ``120``
+
+.. option:: url
+
+   Base URL of the JSON RPC API of the Kodi instance, default: ``http://localhost:8080/jsonrpc``
+
+.. option:: timeout
+
+   Request timeout in seconds, default: ``5``
+
+.. option:: username
+
+   Optional user name to use for authenticating at a server requiring authentication.
+   If used, also a password must be provided.
+
+.. option:: password
+
+   Optional password to use for authenticating at a server requiring authentication.
+   If used, also a user name must be provided.
 
 Requirements
 ^^^^^^^^^^^^
@@ -302,20 +392,32 @@ XPath
 
 .. program:: check-xpath
 
-A generic check which queries a configured URL and expected the reply to contain XML data.
+A generic check which queries a configured URL and expects the reply to contain XML data.
 The returned XML document is checked against a configured `XPath`_ expression and in case the expression matches, the system is assumed to be active.
 
-This can for instance be used with the TV streaming server `tvheadend`_, which provides its current status via an XML reply.
-In case you want to prevent suspending in case there are active subscriptions or recordings, use the following XPath::
+Some common applications and their respective configuration are:
 
-    /currentload/subscriptions[number(.) > 0] | /currentload/recordings/recording
+`tvheadend`_
+    The required URL for `tvheadend`_ is (if running on the same host)::
 
-If you have a permantently running subscriber like `Kodi`_, increase the ``0`` to ``1``.
-The second fragment after the ``|`` prevents suspending in case any recording is planned, even far in the future. If you want to be a bit more permissive, the second fragment could be replaced with::
+        http://127.0.0.1:9981/status.xml
 
-    /currentload/recordings/recording/status | /currentload/recordings/recording/next[number(.) < 10]
+    In case you want to prevent suspending in case there are active subscriptions or recordings, use the following XPath::
 
-This only prevents suspending in case of active or planned recordings closer that 10 minutes.
+        /currentload/subscriptions[number(.) > 0] | /currentload/recordings/recording/start
+
+    If you have a permantently running subscriber like `Kodi`_, increase the ``0`` to ``1``.
+
+`Plex`_
+    For `Plex`_, use the following URL (if running on the same host)::
+
+        http://127.0.0.1:32400/status/sessions/?X-Plex-Token={TOKEN}
+
+    Where acquiring the token is `documented here <https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/>`_.
+
+    If suspending should be prevented in case of any activity, this simple `XPath`_ expression will suffice::
+
+        /MediaContainer[@size > 2]
 
 Options
 ^^^^^^^
@@ -332,6 +434,16 @@ Options
 .. option:: timeout
 
    Timeout for executed requests in seconds. Default: 5.
+
+.. option:: username
+
+   Optional user name to use for authenticating at a server requiring authentication.
+   If used, also a password must be provided.
+
+.. option:: password
+
+   Optional password to use for authenticating at a server requiring authentication.
+   If used, also a user name must be provided.
 
 Requirements
 ^^^^^^^^^^^^

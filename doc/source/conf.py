@@ -6,7 +6,7 @@ import os.path
 
 # needs_sphinx = '1.0'
 
-extensions = ['sphinx.ext.intersphinx']
+extensions = ['sphinx.ext.intersphinx', 'sphinx_issues']
 
 templates_path = ['_templates']
 source_suffix = '.rst'
@@ -51,6 +51,12 @@ rst_epilog = '''
 .. _tvheadend: https://tvheadend.org/
 .. _XPath: https://www.w3.org/TR/xpath/
 .. _logind: https://www.freedesktop.org/wiki/Software/systemd/logind/
+.. _iCalendar: https://tools.ietf.org/html/rfc5545
+.. _dateutil: https://dateutil.readthedocs.io
+.. _python-icalendar: https://icalendar.readthedocs.io
+.. _tzlocal: https://pypi.org/project/tzlocal/
+.. _requests-file: https://github.com/dashea/requests-file
+.. _Plex: https://www.plex.tv/
 
 .. |project| replace:: {project}
 .. |project_bold| replace:: **{project}**
@@ -65,7 +71,7 @@ intersphinx_mapping = {'python': ('https://docs.python.org/3.6', None)}
 html_theme = 'sphinx_rtd_theme'
 # html_theme_options = {}
 
-html_static_path = ['_static']
+# html_static_path = ['_static']
 
 html_sidebars = {
     '**': [
@@ -88,3 +94,6 @@ man_pages = [
      [author],
      5),
 ]
+
+# issues
+issues_github_path = 'languitar/autosuspend'
