@@ -3,15 +3,16 @@ Section: utils
 Priority: optional
 Maintainer: Johannes Wienke <languitar@semipol.de>
 Build-Depends: debhelper (>= 11), dh-python, python3-all, python3-setuptools, python3-sphinx, python3-sphinx-rtd-theme, python3-pytest-runner
-Standards-Version: 4.1.5
+Standards-Version: 4.2.1
 Homepage: https://github.com/languitar/autosuspend
-X-Python3-Version: >= 3.5
+Rules-Requires-Root: no
 Vcs-Git: https://github.com/languitar/autosuspend-debian.git
 Vcs-Browser: https://github.com/languitar/autosuspend-debian
 
 Package: autosuspend
 Architecture: all
-Depends: ${python3:Depends}, ${misc:Depends}
+Depends: ${python3:Depends}, ${misc:Depends}, ${sphinxdoc:Depends}
+Built-Using: ${sphinxdoc:Built-Using}
 Recommends: python3-mpd, python3-requests, python3-lxml, xprintidle, python3-dbus, python3-icalendar, python3-dateutil, python3-tzlocal, python3-requests-file, iputils-ping
 Description: daemon to suspend a system in case of inactivity
  A daemon to automatically suspend and wake up a system. Inactivity and wake up
